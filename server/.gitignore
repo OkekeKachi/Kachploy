@@ -14,6 +14,7 @@ serviceAccountKey.json
 # IDE files
 .vscode/
 .idea/
+/config/*json
 
 # Build directories
 /dist/
