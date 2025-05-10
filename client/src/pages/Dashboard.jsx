@@ -12,7 +12,6 @@ const Dashboard = () => {
         const fetchUserData = async () => {
             const currentUser = auth.currentUser;
             if (!currentUser) return navigate('/login');
-
             const token = await currentUser.getIdToken();
 
             try {

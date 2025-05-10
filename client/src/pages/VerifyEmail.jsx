@@ -3,6 +3,7 @@ import { auth } from '../firebase';
 import { sendEmailVerification, onAuthStateChanged, reload } from 'firebase/auth';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import '../css/verify-email.css';  // Import the styles
 
 const VerifyEmail = () => {
     const [user, setUser] = useState(null);
@@ -26,16 +27,17 @@ const VerifyEmail = () => {
                 await auth.currentUser.getIdToken(true); // force token refresh
                 await reload(auth.currentUser);
                 if (auth.currentUser.emailVerified) {
-
                     const data = JSON.parse(localStorage.getItem('register_user'));
                     console.log(data);
-                    if (!data) return;
+                    // if (!data) return;
+                    if (!data){navigate("/login")};
 
                     try {
                         await axios.post('http://localhost:3000/users/register', {
                             fullName: data.fullName,
                             phone: data.phone,
-                            role: data.role
+                            role: data.role,
+                            profileComplete: data.profileComplete
                         }, {
                             headers: {
                                 Authorization: `Bearer ${data.token}`,
@@ -43,8 +45,6 @@ const VerifyEmail = () => {
                         });
 
                         console.log("✅ User registered to backend");
-                        
-                        
                         navigate('/dashboard');
 
                         // Clear after successful registration
@@ -52,11 +52,9 @@ const VerifyEmail = () => {
                     } catch (err) {
                         console.error("❌ Backend registration failed", err.message);
                     }
-
-                    
                 }
             }
-        }, 7000); // Check every second
+        }, 3000); // Check every 7 seconds
 
         return () => clearInterval(interval);
     }, [navigate]);
@@ -76,11 +74,17 @@ const VerifyEmail = () => {
     };
 
     return (
-        <div>
-            <h2>Please verify your email</h2>
-            <p>{user?.email}</p>
-            <button onClick={resendVerification}>Resend Verification Link</button>
-            {status && <p>{status}</p>}
+        <div className="verify-container">
+            <div className="verify-card">
+                <div className="logo-container">
+                    <img src="./image.png" alt="Logo" className="logo" />
+                    <span className="logo-text">KachPloy</span>
+                </div>
+                <h5><strong>Verify Your Email</strong></h5>
+                <p>Please verify your email address: <span className="email-text">{user?.email}</span></p>
+                <button className="btn blue darken-1 resend-btn" onClick={resendVerification}>Resend Verification Link</button>
+                {status && <p className="status-text">{status}</p>}
+            </div>
         </div>
     );
 };

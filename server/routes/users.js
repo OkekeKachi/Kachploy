@@ -37,7 +37,7 @@ router.get('/', function (req, res, next) {
 
 router.post("/register", verifyToken, async (req, res) => {
   const { uid, email } = req.user;
-  const { fullName, phone, role } = req.body;
+  const { fullName, phone, role, profileComplete } = req.body;
 
   try {
     const userRef = db.collection("users").doc(uid);
@@ -49,6 +49,7 @@ router.post("/register", verifyToken, async (req, res) => {
         fullName,
         phone,
         role,
+        profileComplete,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     } else {
@@ -65,22 +66,22 @@ router.post("/register", verifyToken, async (req, res) => {
   }
 });
 
-router.get('/profile', async (req, res) => {
-  try {
-    const idToken = req.headers.authorization?.split(' ')[1];
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
-    const uid = decodedToken.uid;
+// router.get('/profile', async (req, res) => {
+//   try {
+//     const idToken = req.headers.authorization?.split(' ')[1];
+//     const decodedToken = await admin.auth().verifyIdToken(idToken);
+//     const uid = decodedToken.uid;
 
-    // Fetch from Firestore or your own DB
-    const userDoc = await db.collection('users').doc(uid).get();
-    if (!userDoc.exists) return res.status(404).send("User not found");
+//     // Fetch from Firestore or your own DB
+//     const userDoc = await db.collection('users').doc(uid).get();
+//     if (!userDoc.exists) return res.status(404).send("User not found");
 
-    res.json(userDoc.data());
-  } catch (err) {
-    console.error(err);
-    res.status(401).send("Unauthorized");
-  }
-});
+//     res.json(userDoc.data());
+//   } catch (err) {
+//     console.error(err);
+//     res.status(401).send("Unauthorized");
+//   }
+// });
 
 router.post('/register-profile', verifyToken, async (req, res) => {
   const { uid, email } = req.user;
@@ -99,6 +100,52 @@ router.post('/register-profile', verifyToken, async (req, res) => {
     res.status(500).send("❌ Error saving profile");
   }
 });
+router.get('/getUser/:userId', async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    // Fetch user from Firestore
+    const userRef = admin.firestore().collection('users').doc(userId);
+    const doc = await userRef.get();
+
+    // Check if user exists
+    if (!doc.exists) {
+      return res.status(404).send('User not found');
+    }
+
+    const user = doc.data();  // Get user data
+    console.log(user);
+
+    
+    res.json({ user: user });
+  } catch (error) {
+    console.error('Error fetching user:', error);
+    res.status(500).send('Server error');
+  }
+});
+
+router.put('/update/:uid', async (req, res) => {
+  const { uid } = req.params;
+  const userData = req.body;
+
+  try {
+    const userRef = db.collection('users').doc(uid);
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    await userRef.update(userData);
+    res.status(200).json({ message: 'Profile updated successfully' });
+  } catch (error) {
+    console.error('Error updating user:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+
+
 
 module.exports = router;
 

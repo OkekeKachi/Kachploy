@@ -1,0 +1,80 @@
+body {
+    background: #ffffff;
+    font-family: 'Roboto', sans-serif;
+}
+
+.verify-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    padding: 20px;
+}
+
+.verify-card {
+    background-color: #fff;
+    padding: 30px 20px;
+    border-radius: 10px;
+    text-align: center;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    width: 100%;
+    max-width: 400px;
+}
+
+.logo-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.logo {
+    width: 30px;
+    margin-right: 10px;
+}
+
+.logo-text {
+    font-size: 22px;
+    font-weight: bold;
+    color: #333;
+}
+
+h5 {
+    margin-bottom: 15px;
+    font-size: 24px;
+}
+
+.email-text {
+    font-weight: bold;
+    color: #1976d2;
+}
+
+.resend-btn {
+    margin-top: 20px;
+    width: 100%;
+    border-radius: 8px;
+}
+
+.status-text {
+    margin-top: 15px;
+    font-size: 14px;
+    color: #1976d2;
+}
+
+@media (min-width: 768px) {
+    .verify-card {
+        padding: 40px 30px;
+    }
+
+    .logo {
+        width: 40px;
+    }
+
+    .logo-text {
+        font-size: 24px;
+    }
+
+    h5 {
+        font-size: 28px;
+    }
+}
