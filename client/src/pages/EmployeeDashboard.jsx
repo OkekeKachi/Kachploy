@@ -42,6 +42,8 @@ const EmployeeDashboard = () => {
         // Fetch user profile status
         const fetchProfileStatus = async () => {
             const currentUser = auth.currentUser;
+            console.log(currentUser);
+            
 
             if (!currentUser) {
                 navigate('/login');
@@ -56,7 +58,22 @@ const EmployeeDashboard = () => {
                 ]);
 
                 setUser(userRes.data.user);
-                setJobs(jobsRes.data.jobs || []);
+                const jobList = jobsRes.data.jobs || [];
+                const jobsWithApplicants = await Promise.all(
+                    jobList.map(async (job) => {
+                        try {
+                            const appRes = await axios.get(`http://localhost:3000/applications/job/${job.id}`);
+                            return {
+                                ...job,
+                                applicantCount: appRes.data.applications?.length || 0,
+                            };
+                        } catch (err) {
+                            console.error(`Error fetching applications for job ${job.id}`, err);
+                            return { ...job, applicantCount: 0 };
+                        }
+                    })
+                );
+                setJobs(jobsWithApplicants);
                 setApplications(appsRes.data.applications || []);
 
                 const profileStatus = userRes.data.user.profileComplete;
@@ -109,57 +126,21 @@ const EmployeeDashboard = () => {
     return (
         <div>
             {/* Top Navigation Bar */}
-            <nav className="white">
-                <div className="nav-wrapper container" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    {/* Left: Logo */}
-                    <div className="logo-container brand-logo">
-                        <img src="./image.png" alt="Logo" className="logo" />
-                        <span className="logo-text">KachPloy</span>
-                    </div>
-                    {/* Center: Search Bar */}
-
-                    <div className="search-container hide-on-med-and-down" style={{ flexGrow: 1, display: "flex", justifyContent: "center", marginLeft: "80px" }}>
-                        <div className="input-field" style={{ width: "250px", position: "relative" }}>
-                            <input
-                                id="search"
-                                type="search"
-                                required
-                                placeholder="Search for Jobs"
-                                style={{
-                                    height: "35px",
-                                    fontSize: "14px",
-                                    padding: "0 10px",
-                                    border: "1px solid rgb(45, 59, 122)",
-                                    borderRadius: "6px",
-                                    boxShadow: "none",
-                                    width: "100%",
-                                    paddingLeft: "30px"
-                                }}
-                            />
-                            <label className="label-icon" htmlFor="search" style={{
-                                position: 'absolute',
-                                left: '10px',
-                                top: '42%',
-                                transform: 'translateY(-50%)'
-                            }}>
-                                <i className="material-icons black-text" style={{ fontSize: "24px" }}>search</i>
-                            </label>
-                            <i className="material-icons" style={{
-                                fontSize: "18px",
-                                cursor: "pointer",
-                                position: "absolute",
-                                left: "250px",
-                                top: "40%",
-                                transform: "translateY(-50%)"
-                            }}>close</i>
-                        </div>
-                    </div>
-
+            <nav className="white z-depth-0" >
+                <div className="nav-wrapper " style={{marginLeft:"100px", marginRight:"100px"}} >
                     {/* Right: Links & Profile */}
-                    <ul id="nav-mobile" className="right hide-on-med-and-down" style={{ display: "flex", alignItems: "center", gap: "20px", margin: 0 }}>
-                        <li><Link to="/my-applications" className="black-text">My Applications</Link></li>
-                        <li><Link to="/profile" className="black-text">Profile</Link></li>
-                        <li><Link to="/my-jobs" className="black-text">My Jobs</Link></li>
+                    <ul id="nav-mobile" className="left hide-on-med-and-down">
+                        <li>
+                            <img src="./image.png" alt="Logo" className="logo" style={{width:"20px"}} />
+                            <span className="logo-text" style={{fontSize:"20px"}}>KachPloy</span>                            
+                        </li>
+                        <li style={{ paddingLeft: "20px", marginTop:"3px" }} ><Link to="/my-applications" style={{ fontSize: "14px" }} className="black-text">My Applications</Link></li>
+                        <li ><Link to="/profile" style={{ fontSize: "14px", marginTop: "3px" }} className="black-text">Profile</Link></li>
+                        <li ><Link to="/my-jobs" style={{ fontSize: "14px", marginTop: "3px" }} className="black-text">My Jobs</Link></li>
+                        
+                    </ul>
+                    
+                    <ul id="nav-mobile" className="right hide-on-med-and-down" >                        
                         <li>
                             <a className="dropdown-trigger black-text" href="#!" data-target="dropdown1" style={{ display: "flex", alignItems: "center" }}>
                                 <img
@@ -168,20 +149,26 @@ const EmployeeDashboard = () => {
                                     className="circle"
                                     style={{ width: "30px", height: "30px", objectFit: "cover", marginRight: "6px" }}
                                 />
-                                
                                 <i className="material-icons right">arrow_drop_down</i>
                             </a>
                         </li>
                     </ul>
-
+                    <form className='right'>
+                        <div className="input-field center" style={{ padding: "14px" }} >
+                            <input id="search" style={{ borderRadius: "10px", height:"30px", width: "350px", border: "1px rgb(91, 91, 91) solid" }}  type="search" placeholder="Search for jobs" required />
+                            <label style={{ marginLeft: "18px", }} className="label-icon" htmlFor="search">
+                                <i className="material-icons black-text" style={{ color: "black !important" }}>search</i>
+                            </label>
+                            <i className="material-icons">close</i>
+                        </div>
+                    </form>
                     {/* Mobile Menu Trigger */}
                     <a href="#" data-target="mobile-nav" className="sidenav-trigger">
                         <i className="material-icons black-text">menu</i>
                     </a>
-                </div>
-
+                </div >
                 {/* Dropdown Structure */}
-                <ul id="dropdown1" className="dropdown-content">
+                < ul id="dropdown1" className="dropdown-content" >
                     <li><Link to="/profile">Edit Profile</Link></li>
                     <li className="divider" tabIndex="-1"></li>
                     <li><a href="#!" onClick={handleLogout}>Logout</a></li>
@@ -235,20 +222,28 @@ const EmployeeDashboard = () => {
                                     <p>Add more skills to increase your chances.</p>
                                 </div>
                                 <div style={{ flex: 1, textAlign: "right" }}>
-                                    <img src="/fly.png" alt="Upskill" style={{ height: "200px", objectFit: "contain" }} />                                
+                                    <img src="/fly.png" alt="Upskill" style={{ height: "200px", objectFit: "contain" }} />
                                 </div>
                             </div>
                         </div><br />
-                        <h4><strong>Apply for Jobs</strong></h4>
+                        <form style={{ paddingLeft: "0px", marginRight: "180px"}}>
+                            <div className="input-field center" >
+                                <input id="search" style={{ height: "30px", borderRadius: "10px", paddingLeft: "50px", border: "1px rgb(91, 91, 91) solid" }}  type="search" placeholder="Search for jobs" required /> 
+                                <label style={{marginTop:"6px"}} className="label-icon" htmlFor="search"><i className="material-icons">search</i></label>
+                               
+                            </div>
+                        </form>
+                        <h4><strong>Apply for Jobs</strong></h4>                        
                         <JobSplitView suggestedJobs={suggestedJobs} />
                     </div>
 
                     {/* Right Column - Profile Sidebar Component */}
                     <div className="col l3">
+                        
                         <ProfileSidebar user={user} />
                     </div>
                 </div>
-            </div>            
+            </div>
         </div>
     );
 };

@@ -41,10 +41,10 @@ const JobSplitView = ({ suggestedJobs }) => {
     if (suggestedJobs.length === 0) return <p>No suggested jobs available.</p>;
 
     return (
-        <div className="job-split-view card" style={{ margin: '20px 0', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
+        <div className="job-split-view card" style={{ margin: '20px 0', borderRadius: '8px', border: "1px hsl(0, 9.20%, 76.70%) solid", overflow: 'hidden', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
             <div style={{ display: 'flex', flexDirection: 'row', height: '100%', minHeight: '400px' }}>
                 {/* Left Panel - Job List */}
-                <div style={{ width: '50%', borderRight: '1px solid #e0e0e0', overflowY: 'auto', maxHeight: '500px' }}>
+                <div style={{ width: '50%', borderRight: '1px solid #e0e0e0', overflowY: 'auto', maxHeight: '600px' }}>
                     {/* Top Tabs */}
                     <div style={{ padding: '20px 20px 0', borderBottom: '1px solid #e0e0e0' }}>
                         <h5 style={{ margin: '0 0 15px', fontSize: '20px', fontWeight: '500' }}><strong>Jobs you might like</strong></h5>
@@ -146,7 +146,7 @@ const JobSplitView = ({ suggestedJobs }) => {
                                 <div style={{ marginBottom: '10px' }}>
                                     <i className="material-icons tiny" style={{ fontSize: '16px', color: '#757575', marginRight: '5px', verticalAlign: 'middle' }}>description</i>
                                     <span style={{ color: '#757575', fontSize: '14px' }}>
-                                        Proposals: {job.proposals || 0}
+                                        Proposals: {job.applicantCount || 0}
                                     </span>
                                 </div>
 
@@ -169,7 +169,7 @@ const JobSplitView = ({ suggestedJobs }) => {
                                         <span
                                             key={i}
                                             style={{
-                                                backgroundColor: '#7D7D7D',
+                                                backgroundColor: 'rgba(79, 80, 88, 0.65)',
                                                 padding: '4px 12px',
                                                 borderRadius: '15px',
                                                 marginRight: '8px',
@@ -379,7 +379,12 @@ const JobSplitView = ({ suggestedJobs }) => {
                 <div style={{ width: '50%', padding: '20px', overflowY: 'auto', maxHeight: '600px' }}>
                     {selectedJob && (
                         <>
-                            <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center' }}>
+                            <div>
+                                <h5>{selectedJob.title}</h5><br />
+                                <span style={{display:"block", marginBottom: "20px" }}>posted 2 hours ago</span>
+                                <span>{selectedJob.description}</span>
+                            </div><br /><hr />
+                            <div style={{marginTop:"20px", marginBottom: '20px', display: 'flex', alignItems: 'center' }}>
                                 <i className="material-icons" style={{ fontSize: '22px', color: '#757575', marginRight: '10px' }}>public</i>
                                 <div>
                                     <div style={{ fontWeight: '500' }}>Nigeria</div>
@@ -404,7 +409,7 @@ const JobSplitView = ({ suggestedJobs }) => {
                             </div>
 
                             <div style={{ marginBottom: '20px' }}>
-                                <div style={{ fontWeight: '500', marginBottom: '10px' }}>Project Type: <span style={{ fontWeight: '400' }}>Ongoing project</span></div>
+                                <div style={{ fontWeight: '500', marginBottom: '10px' }}>Project Type: <span style={{ fontWeight: '400' }}>{selectedJob.jobType}</span></div>
                             </div>
 
                             <div style={{ marginBottom: '20px' }}>

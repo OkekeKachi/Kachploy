@@ -14,7 +14,7 @@ const ProfileSidebar = ({ user }) => {
                         style={{ width: "80px", height: "80px", objectFit: "cover" }}
                     />
                     <h5 style={{ margin: "10px 0 0", fontSize: "18px", fontWeight: "bold" }}>
-                        {user.fullName || 'KACHI O.'}
+                        {user.fullName}
                     </h5>
                     <p style={{ margin: "5px 0", fontSize: "14px", color: "#555" }}>
                         {user.title || 'Full Stack Web Developer'}
@@ -119,7 +119,7 @@ const ProfileSidebar = ({ user }) => {
                         <i className="material-icons" style={{ fontSize: "20px", color: "#555" }}>help</i>
                     </div>
                 </div>
-            </div><br /><br />
+            </div><br /><br /><br />
         </div>
     );
 };
