@@ -123,6 +123,8 @@ const EmployeeDashboard = () => {
         job.skillsRequired?.some(skill => user.skills?.includes(skill))
     );
 
+    
+    
     return (
         <div>
             {/* Top Navigation Bar */}

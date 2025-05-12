@@ -116,7 +116,7 @@ const JobSplitView = ({ suggestedJobs }) => {
                             >
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                                     <h6 style={{ margin: '0 0 10px', fontWeight: '500', fontSize: '16px' }}>
-                                        {job.title || "Need a Website Designer Urgently"}
+                                      <strong>{job.title || "Need a Website Designer Urgently"}</strong>  
                                     </h6>
                                     <div style={{ display: 'flex' }}>
                                         <button
