@@ -7,7 +7,7 @@ import { auth } from '../firebase';
 const SkeletonJobLoader = () => {
     return (
         <div style={{ marginLeft: "100px", marginRight: "100px", }}>
-            <nav className="white z-depth-0" style={{ marginTop: "20px" }}>
+            <nav className="white z-depth-0" style={{ marginTop: "15px" }}>
                 <div className="nav-wrapper" >
                     {/* Left Side: Logo and Navigation Links */}
                     <ul id="nav-mobile" className="left hide-on-med-and-down" style={{ marginTop: "20px" }}>

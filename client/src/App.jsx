@@ -1,6 +1,4 @@
 import React from 'react';
-import 'materialize-css/dist/css/materialize.min.css';
-import 'materialize-css/dist/js/materialize.min.js';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import ProtectedRoute from './pages/ProtectedRoute';
 import VerifyEmail from './pages/VerifyEmail';

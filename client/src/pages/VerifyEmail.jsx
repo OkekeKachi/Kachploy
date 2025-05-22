@@ -3,7 +3,6 @@ import { auth } from '../firebase';
 import { sendEmailVerification, onAuthStateChanged, reload } from 'firebase/auth';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import '../css/verify-email.css';  // Import the styles
 
 const VerifyEmail = () => {
     const [user, setUser] = useState(null);
@@ -17,7 +16,6 @@ const VerifyEmail = () => {
                 setUser(usr);
             }
         });
-
         return () => unsubscribe();
     }, []);
 
@@ -30,8 +28,7 @@ const VerifyEmail = () => {
                     const data = JSON.parse(localStorage.getItem('register_user'));
                     console.log(data);
                     // if (!data) return;
-                    if (!data){navigate("/login")};
-
+                    if (!data) { navigate("/login") };
                     try {
                         await axios.post('http://localhost:3000/users/register', {
                             fullName: data.fullName,
@@ -43,10 +40,8 @@ const VerifyEmail = () => {
                                 Authorization: `Bearer ${data.token}`,
                             },
                         });
-
                         console.log("✅ User registered to backend");
                         navigate('/dashboard');
-
                         // Clear after successful registration
                         localStorage.removeItem("register_user");
                     } catch (err) {
@@ -54,15 +49,13 @@ const VerifyEmail = () => {
                     }
                 }
             }
-        }, 3000); // Check every 7 seconds
-
+        }, 3000); // Check every 3 seconds
         return () => clearInterval(interval);
     }, [navigate]);
 
     const resendVerification = async () => {
         if (!user) return setStatus('⚠️ Not logged in.');
         if (user.emailVerified) return setStatus('✅ Already verified.');
-
         try {
             await sendEmailVerification(user, {
                 url: 'http://localhost:5173/dashboard', // Or your deployed URL
@@ -74,16 +67,47 @@ const VerifyEmail = () => {
     };
 
     return (
-        <div className="verify-container">
-            <div className="verify-card">
-                <div className="logo-container">
-                    <img src="./image.png" alt="Logo" className="logo" />
-                    <span className="logo-text">KachPloy</span>
+        <div className="flex justify-center items-center h-screen p-5 bg-white font-sans">
+            <div className="bg-white p-8 md:p-10 rounded-xl text-center shadow-lg w-full max-w-sm">
+                {/* Logo Container */}
+                <div className="flex justify-center items-center mb-5">
+                    <img
+                        src="./image.png"
+                        alt="Logo"
+                        className="w-5 mr-2 md:w-7"
+                    />
+                    <span className="text-xl font-medium text-gray-800 antialiased md:text-2xl">
+                        KachPloy
+                    </span>
                 </div>
-                <h5><strong>Verify Your Email</strong></h5>
-                <p>Please verify your email address: <span className="email-text">{user?.email}</span></p>
-                <button className="btn blue darken-1 resend-btn" onClick={resendVerification}>Resend Verification Link</button>
-                {status && <p className="status-text">{status}</p>}
+
+                {/* Title */}
+                <h5 className="text-xl font-medium text-gray-800 mb-4 antialiased md:text-2xl">
+                    Verify Your Email
+                </h5>
+
+                {/* Description */}
+                <p className="text-gray-600 mb-5 font-light antialiased">
+                    Please verify your email address:{' '}
+                    <span className="font-medium text-blue-700">
+                        {user?.email}
+                    </span>
+                </p>
+
+                {/* Resend Button */}
+                <button
+                    className="w-full bg-blue-700 hover:bg-blue-800 text-white font-normal py-3 px-4 rounded-lg mt-5 transition-colors antialiased"
+                    onClick={resendVerification}
+                >
+                    Resend Verification Link
+                </button>
+
+                {/* Status Message */}
+                {status && (
+                    <p className="text-sm text-blue-700 mt-4 font-light antialiased">
+                        {status}
+                    </p>
+                )}
             </div>
         </div>
     );

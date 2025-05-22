@@ -1,8 +1,9 @@
+@import "tailwindcss";
 body {
     background: #ffffff;
     font-family: 'Roboto', sans-serif;
 }
-.logo-container.brand-logo{
+/* .logo-container.brand-logo{
     display: flex;
     justify-content: center;
     align-items: center;
@@ -29,4 +30,4 @@ body {
             max-width: 1080px;
             width: 90%;
     }
-}
+} */

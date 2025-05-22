@@ -1,49 +1,27 @@
+
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { auth } from '../firebase'; // Adjust path if needed
 import axios from 'axios';
-import M from 'materialize-css';
 import JobSplitView from '../components/JobSplitView';
 import ProfileSidebar from '../components/profileSideBar';
+import { ChevronDown, Search, Menu, X } from 'lucide-react';
 
 const EmployeeDashboard = () => {
     const [isProfileComplete, setIsProfileComplete] = useState(true);
     const [jobs, setJobs] = useState([]);
     const [user, setUser] = useState({});
     const [applications, setApplications] = useState([]);
+    const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const [activeSlide, setActiveSlide] = useState(0);
     const navigate = useNavigate();
 
     useEffect(() => {
-        // Initialize Materialize components
-        M.AutoInit();
-
-        const elemsDropdown = document.querySelectorAll('.dropdown-trigger');
-        M.Dropdown.init(elemsDropdown, {
-            constrainWidth: false,
-            coverTrigger: false,
-            alignment: 'right'
-        });
-
-        const elemsSidenav = document.querySelectorAll('.sidenav');
-        M.Sidenav.init(elemsSidenav);
-
-        const elems = document.querySelectorAll('.carousel');
-        const instances = M.Carousel.init(elems, {
-            indicators: true
-        });
-
-        // Auto-slide every 4 seconds
-        const interval = setInterval(() => {
-            if (instances[0]) {
-                instances[0].next();
-            }
-        }, 2500);
-
         // Fetch user profile status
         const fetchProfileStatus = async () => {
             const currentUser = auth.currentUser;
             console.log(currentUser);
-            
 
             if (!currentUser) {
                 navigate('/login');
@@ -89,11 +67,12 @@ const EmployeeDashboard = () => {
 
         fetchProfileStatus();
 
-        // ✅ Combined cleanup
-        return () => {
-            clearInterval(interval);
-            instances.forEach((instance) => instance.destroy?.());
-        };
+        // Carousel auto-slide
+        const interval = setInterval(() => {
+            setActiveSlide(prev => (prev + 1) % 3);
+        }, 2500);
+
+        return () => clearInterval(interval);
     }, [navigate]);
 
     const applyToJob = (jobId) => {
@@ -107,6 +86,14 @@ const EmployeeDashboard = () => {
         } catch (error) {
             console.error('Logout error:', error);
         }
+    };
+
+    const toggleMobileMenu = () => {
+        setIsMobileMenuOpen(prev => !prev);
+    };
+
+    const toggleDropdown = () => {
+        setIsDropdownOpen(prev => !prev);
     };
 
     const filteredJobs = jobs.filter(job => {
@@ -123,125 +110,224 @@ const EmployeeDashboard = () => {
         job.skillsRequired?.some(skill => user.skills?.includes(skill))
     );
 
-    
-    
+    const slides = [
+        {
+            bgColor: "bg-blue-600",
+            title: "Upskill Now",
+            content: "Enroll in relevant courses to boost your qualifications.",
+            image: "/rocket.png"
+        },
+        {
+            bgColor: "bg-indigo-900",
+            title: `Welcome back, ${user.fullName || 'User'}!`,
+            content: "Here are some job opportunities waiting for you.",
+            image: "/learn.png"
+        },
+        {
+            bgColor: "bg-blue-800",
+            title: "Boost your profile",
+            content: "Add more skills to increase your chances.",
+            image: "/fly.png"
+        }
+    ];
+
     return (
-        <div>
+        <div className="min-h-screen bg-gray-50">
             {/* Top Navigation Bar */}
-            <nav className="white z-depth-0" >
-                <div className="nav-wrapper " style={{marginLeft:"100px", marginRight:"100px"}} >
-                    {/* Right: Links & Profile */}
-                    <ul id="nav-mobile" className="left hide-on-med-and-down">
-                        <li>
-                            <img src="./image.png" alt="Logo" className="logo" style={{width:"20px"}} />
-                            <span className="logo-text" style={{fontSize:"20px"}}>KachPloy</span>                            
-                        </li>
-                        <li style={{ paddingLeft: "20px", marginTop:"3px" }} ><Link to="/my-applications" style={{ fontSize: "14px" }} className="black-text">My Applications</Link></li>
-                        <li ><Link to="/profile" style={{ fontSize: "14px", marginTop: "3px" }} className="black-text">Profile</Link></li>
-                        <li ><Link to="/my-jobs" style={{ fontSize: "14px", marginTop: "3px" }} className="black-text">My Jobs</Link></li>
-                        
-                    </ul>
-                    
-                    <ul id="nav-mobile" className="right hide-on-med-and-down" >                        
-                        <li>
-                            <a className="dropdown-trigger black-text" href="#!" data-target="dropdown1" style={{ display: "flex", alignItems: "center" }}>
-                                <img
-                                    src={user.profilePic}
-                                    alt="Profile"
-                                    className="circle"
-                                    style={{ width: "30px", height: "30px", objectFit: "cover", marginRight: "6px" }}
-                                />
-                                <i className="material-icons right">arrow_drop_down</i>
-                            </a>
-                        </li>
-                    </ul>
-                    <form className='right'>
-                        <div className="input-field center" style={{ padding: "14px" }} >
-                            <input id="search" style={{ borderRadius: "10px", height:"30px", width: "350px", border: "1px rgb(91, 91, 91) solid" }}  type="search" placeholder="Search for jobs" required />
-                            <label style={{ marginLeft: "18px", }} className="label-icon" htmlFor="search">
-                                <i className="material-icons black-text" style={{ color: "black !important" }}>search</i>
-                            </label>
-                            <i className="material-icons">close</i>
+            <nav className="bg-gray shadow-sm">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div className="flex justify-between h-16">
+                        {/* Left: Logo and Links */}
+                        <div className="flex items-center">
+                            <div className="flex-shrink-0 flex items-center">
+                                <img src="./image.png" alt="Logo" className="h-5 w-5" />
+                                <span className="ml-2 text-xl font-semibold">KachPloy</span>
+                            </div>
+                            <div className="hidden md:ml-6 md:flex md:space-x-4">
+                                <Link to="/my-applications" className="px-3 py-2 text-sm text-gray-900 hover:text-gray-600">
+                                    My Applications
+                                </Link>
+                                <Link to="/profile" className="px-3 py-2 text-sm text-gray-900 hover:text-gray-600">
+                                    Profile
+                                </Link>
+                                <Link to="/my-jobs" className="px-3 py-2 text-sm text-gray-900 hover:text-gray-600">
+                                    My Jobs
+                                </Link>
+                            </div>
                         </div>
-                    </form>
-                    {/* Mobile Menu Trigger */}
-                    <a href="#" data-target="mobile-nav" className="sidenav-trigger">
-                        <i className="material-icons black-text">menu</i>
-                    </a>
-                </div >
-                {/* Dropdown Structure */}
-                < ul id="dropdown1" className="dropdown-content" >
-                    <li><Link to="/profile">Edit Profile</Link></li>
-                    <li className="divider" tabIndex="-1"></li>
-                    <li><a href="#!" onClick={handleLogout}>Logout</a></li>
-                </ul>
+
+                        {/* Center: Search */}
+                        <div className="hidden md:flex items-center">
+                            <div className="relative">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <Search className="h-4 w-4 text-gray-500" />
+                                </div>
+                                <input
+                                    type="text"
+                                    placeholder="Search for jobs"
+                                    className="block w-80 pl-10 pr-3 py-1.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+                        </div>
+
+                        {/* Right: Profile */}
+                        <div className="hidden md:flex items-center">
+                            <div className="relative">
+                                <button
+                                    onClick={toggleDropdown}
+                                    className="flex items-center space-x-2 focus:outline-none"
+                                >
+                                    {user.profilePic && (
+                                        <img
+                                            className="h-8 w-8 rounded-full object-cover"
+                                            src={user.profilePic}
+                                            alt="Profile"
+                                        />
+                                    )}
+                                    <ChevronDown className="h-4 w-4 text-gray-600" />
+                                </button>
+
+                                {/* Dropdown Menu */}
+                                {isDropdownOpen && (
+                                    <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 z-50">
+                                        <Link to="/profile" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                            Edit Profile
+                                        </Link>
+                                        <div className="border-t border-gray-100"></div>
+                                        <button
+                                            onClick={handleLogout}
+                                            className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                        >
+                                            Logout
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Mobile menu button */}
+                        <div className="flex items-center md:hidden">
+                            <button
+                                onClick={toggleMobileMenu}
+                                className="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 focus:outline-none"
+                            >
+                                {isMobileMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Mobile menu */}
+                {isMobileMenuOpen && (
+                    <div className="md:hidden">
+                        <div className="pt-2 pb-3 space-y-1">
+                            <div className="px-4 py-3 border-b border-gray-200">
+                                <div className="flex items-center space-x-3">
+                                    {user.profilePic && (
+                                        <img
+                                            className="h-10 w-10 rounded-full object-cover"
+                                            src={user.profilePic}
+                                            alt="Profile"
+                                        />
+                                    )}
+                                    <div>
+                                        <div className="font-medium text-gray-800">{user.fullName || 'User'}</div>
+                                        <div className="text-sm text-gray-500">{user.email || 'user@example.com'}</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <Link to="/my-applications" className="block px-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-100">
+                                My Applications
+                            </Link>
+                            <Link to="/profile" className="block px-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-100">
+                                Profile
+                            </Link>
+                            <Link to="/my-jobs" className="block px-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-100">
+                                My Jobs
+                            </Link>
+                            <button
+                                onClick={handleLogout}
+                                className="w-full text-left block px-4 py-2 text-base font-medium text-gray-700 hover:bg-gray-100"
+                            >
+                                Logout
+                            </button>
+                        </div>
+                        <div className="pt-4 pb-3 px-4">
+                            <div className="relative">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <Search className="h-4 w-4 text-gray-500" />
+                                </div>
+                                <input
+                                    type="text"
+                                    placeholder="Search for jobs"
+                                    className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                )}
             </nav>
 
-            {/* Mobile Navigation */}
-            <ul className="sidenav" id="mobile-nav">
-                <li>
-                    <div className="user-view">
-                        <div className="background teal lighten-5"></div>
-                        <a href="#user"><img className="circle" src={user.profilePic} alt="User" /></a>
-                        <a href="#name"><span className="name black-text">{user.fullName || 'User'}</span></a>
-                        <a href="#email"><span className="email black-text">{user.email || 'user@example.com'}</span></a>
-                    </div>
-                </li>
-                <li><Link to="/my-applications">My Applications</Link></li>
-                <li><Link to="/profile">Profile</Link></li>
-                <li><div className="divider"></div></li>
-                <li><a href="#!" onClick={handleLogout}>Logout</a></li>
-            </ul>
-
-            {/* Suggested Jobs Section */}
-            <div style={{ margin: "30px 130px" }}>
-                <div className="row">
+            {/* Main Content */}
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 ">
+                <div className="flex flex-col md:flex-row md:space-x-8 ">
                     {/* Left Column - Job Content */}
-                    <div className="col l9">
-                        <div className="carousel carousel-slider " style={{ height: "250px", borderTopLeftRadius: "30px", borderTopRightRadius: "30px", borderBottomLeftRadius: "30px", borderBottomRightRadius: "30px" }}>
-                            <div className="carousel-item white-text" style={{ backgroundColor: "#0877b8", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px" }}>
-                                <div style={{ flex: 1 }}>
-                                    <h5>Upskill Now</h5>
-                                    <p>Enroll in relevant courses to boost your qualifications.</p>
+                    <div className="md:w-3/4 ">
+                        {/* Carousel */}
+                        <div className="hidden sm:block relative h-64 rounded-3xl overflow-hidden mb-6">
+                            {slides.map((slide, index) => (
+                                <div
+                                    key={index}
+                                    className={`absolute inset-0 flex items-center transition-opacity duration-500 ease-in-out ${index === activeSlide ? 'opacity-100' : 'opacity-0 pointer-events-none'
+                                        } ${slide.bgColor}`}
+                                >
+                                    <div className="flex justify-between items-center w-full px-8">
+                                        <div className="text-white w-1/2">
+                                            <h5 className="text-xl font-bold mb-2">{slide.title}</h5>
+                                            <p>{slide.content}</p>
+                                        </div>
+                                        <div className="w-1/2 text-right">
+                                            <img src={slide.image} alt="Illustration" className="h-44 object-contain inline-block" />
+                                        </div>
+                                    </div>
                                 </div>
-                                <div style={{ flex: 1, textAlign: "right" }}>
-                                    <img src="/rocket.png" alt="Job Search" style={{ height: "180px", objectFit: "contain" }} />
-                                </div>
-                            </div>
-                            <div className="carousel-item white-text" style={{ backgroundColor: "#38168a", display: "flex", alignItems: "center", padding: "20px" }} >
-                                <div style={{ flex: 1 }}>
-                                    <h5>Welcome back, {user.fullName}!</h5>
-                                    <p>Here are some job opportunities waiting for you.</p>
-                                </div>
-                                <div style={{ flex: 1, textAlign: "right" }}>
-                                    <img src="/learn.png" alt="Boost" style={{ height: "180px", objectFit: "contain" }} />
-                                </div>
-                            </div>
+                            ))}
 
-                            <div className="carousel-item white-text" style={{ backgroundColor: "#3e6b8f", display: "flex", alignItems: "center", padding: "20px" }}>
-                                <div style={{ flex: 1 }}>
-                                    <h5>Boost your profile</h5>
-                                    <p>Add more skills to increase your chances.</p>
-                                </div>
-                                <div style={{ flex: 1, textAlign: "right" }}>
-                                    <img src="/fly.png" alt="Upskill" style={{ height: "200px", objectFit: "contain" }} />
-                                </div>
+                            {/* Carousel Indicators */}
+                            <div className="absolute bottom-4 left-0 right-0 flex justify-center space-x-2">
+                                {slides.map((_, index) => (
+                                    <button
+                                        key={index}
+                                        onClick={() => setActiveSlide(index)}
+                                        className={`h-2 w-2 rounded-full ${index === activeSlide ? 'bg-white' : 'bg-white/50'
+                                            }`}
+                                    ></button>
+                                ))}
                             </div>
-                        </div><br />
-                        <form style={{ paddingLeft: "0px", marginRight: "180px"}}>
-                            <div className="input-field center" >
-                                <input id="search" style={{ height: "30px", borderRadius: "10px", paddingLeft: "50px", border: "1px rgb(91, 91, 91) solid" }}  type="search" placeholder="Search for jobs" required /> 
-                                <label style={{marginTop:"6px"}} className="label-icon" htmlFor="search"><i className="material-icons">search</i></label>
-                               
+                        </div>
+
+                        {/* Mobile Search */}
+                        <div className="md:hidden mb-6">
+                            <div className="relative">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <Search className="h-4 w-4 text-gray-500" />
+                                </div>
+                                <input
+                                    type="text"
+                                    placeholder="Search for jobs"
+                                    className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                />
                             </div>
-                        </form>
-                        <h4><strong>Apply for Jobs</strong></h4>                        
+                        </div>
+
+                        <h2 className="text-2xl font-bold mb-6">Apply for Jobs</h2>
+
+                        {/* JobSplitView Component */}
                         <JobSplitView suggestedJobs={suggestedJobs} />
                     </div>
 
-                    {/* Right Column - Profile Sidebar Component */}
-                    <div className="col l3">
-                        
+                    {/* Right Column - Profile Sidebar */}
+                    <div className="md:w-1/4 mt-8 md:mt-0">
                         <ProfileSidebar user={user} />
                     </div>
                 </div>

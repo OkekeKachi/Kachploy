@@ -7,185 +7,92 @@ import EmployeeDashboard from './EmployeeDashboard';
 
 const SkeletonJobLoader = () => {
     return (
-        <div style={{ marginLeft: "100px", marginRight: "100px", }}>
-            <nav className="white z-depth-0" style={{ marginTop: "30px" }}>
-                <div className="nav-wrapper" >
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            {/* Custom Animation Styles */}
+            <style jsx>{`
+        @keyframes customPulse {
+          0% { opacity: 1; }
+          50% { opacity: 0.5; }
+          100% { opacity: 1; }
+        }
+        .animate-custom-pulse {
+          animation: customPulse 1.5s infinite;
+        }
+      `}</style>
+
+            {/* Navigation Bar Skeleton */}
+            <nav className="bg-white py-4">
+                <div className="flex justify-between items-center">
                     {/* Left Side: Logo and Navigation Links */}
-                    <ul id="nav-mobile" className="left hide-on-med-and-down" style={{ marginTop: "20px" }}>
-                        <li style={{ display: 'flex', alignItems: 'center' }}>
-                            {/* Logo Skeleton */}
-                            <div style={{
-                                width: '20px',
-                                height: '20px',
-                                backgroundColor: '#e0e0e0',
-                                marginRight: '10px',
-                                animation: 'pulse 1.5s infinite'
-                            }}></div>
-                            <div style={{
-                                width: '80px',
-                                height: '20px',
-                                backgroundColor: '#e0e0e0',
-                                animation: 'pulse 1.5s infinite'
-                            }}></div>
-                        </li>
+                    <div className="flex items-center space-x-5">
+                        {/* Logo Skeleton */}
+                        <div className="flex items-center">
+                            <div className="w-5 h-5 bg-gray-200 mr-2 rounded animate-custom-pulse"></div>
+                            <div className="w-20 h-5 bg-gray-200 rounded animate-custom-pulse"></div>
+                        </div>
 
                         {/* Navigation Links Skeleton */}
                         {['My Applications', 'Profile', 'My Jobs'].map((link, index) => (
-                            <li
+                            <div
                                 key={link}
-                                style={{
-                                    paddingLeft: index === 0 ? "20px" : "0",
-                                    marginTop: "3px",
-                                    marginLeft: index > 0 ? '15px' : '0'
-                                }}
-                            >
-                                <div style={{
-                                    width: '100px',
-                                    height: '14px',
-                                    backgroundColor: '#e0e0e0',
-                                    animation: 'pulse 1.5s infinite'
-                                }}></div>
-                            </li>
+                                className={`w-24 h-4 bg-gray-200 rounded animate-custom-pulse ${index === 0 ? 'ml-5' : ''}`}
+                            ></div>
                         ))}
-                    </ul>
+                    </div>
 
                     {/* Right Side: Search and Profile */}
-                    <div>
+                    <div className="flex items-center">
                         {/* Search Bar Skeleton */}
-
+                        <div className="w-80 h-8 bg-gray-200 rounded-lg mr-6 animate-custom-pulse"></div>
 
                         {/* Profile Dropdown Skeleton */}
-                        <ul id="nav-mobile" className="right hide-on-med-and-down" >
-                            <li>
-                                <form className='right'>
-                                    <div className="input-field center" style={{ padding: "14px" }}>
-                                        <div style={{
-                                            width: '350px',
-                                            height: '30px',
-                                            borderRadius: '10px',
-                                            backgroundColor: '#e0e0e0',
-                                            animation: 'pulse 1.5s infinite'
-                                        }}></div>
-                                    </div>
-                                </form>
-                            </li>
-                            <li style={{ marginTop: "13px" }}>
-                                <div style={{
-                                    display: "flex",
-                                    alignItems: "center"
-                                }}>
-                                    <div style={{
-                                        width: '30px',
-                                        height: '30px',
-                                        borderRadius: '50%',
-                                        backgroundColor: '#e0e0e0',
-                                        marginRight: '6px',
-                                        animation: 'pulse 1.5s infinite'
-                                    }}></div>
-                                    <div style={{
-                                        width: '20px',
-                                        height: '20px',
-                                        backgroundColor: '#e0e0e0',
-                                        animation: 'pulse 1.5s infinite'
-                                    }}></div>
-                                </div>
-                            </li>
-                        </ul>
+                        <div className="flex items-center mt-3">
+                            <div className="w-8 h-8 rounded-full bg-gray-200 mr-2 animate-custom-pulse"></div>
+                            <div className="w-5 h-5 bg-gray-200 rounded animate-custom-pulse"></div>
+                        </div>
                     </div>
 
-                    {/* Mobile Menu Trigger Skeleton */}
-                    <a href="#" data-target="mobile-nav" className="sidenav-trigger">
-                        <div style={{
-                            width: '24px',
-                            height: '24px',
-                            backgroundColor: '#e0e0e0',
-                            
-                            animation: 'pulse 1.5s infinite'
-                        }}></div>
-                    </a>
+                    {/* Mobile Menu Trigger Skeleton - Hidden on desktop, visible on mobile */}
+                    <div className="md:hidden">
+                        <div className="w-6 h-6 bg-gray-200 rounded animate-custom-pulse"></div>
+                    </div>
                 </div>
-
-                <style jsx>{`
-                @keyframes pulse {
-                    0% { opacity: 1; }
-                    50% { opacity: 0.5; }
-                    100% { opacity: 1; }
-                }
-            `}</style>
             </nav>
-            <div className="row">
-                <div className="col l8">
-                    <div style={{
-                        
-                        height: '250px',
-                        marginTop: "30px",
-                        marginLeft: "30px",
-                        backgroundColor: '#e0e0e0',
-                        borderRadius: "10px",
-                        animation: 'pulse 1.5s infinite'
-                    }}></div>
-                    <div style={{
-                        height: '30px',
-                        marginTop: "30px",
-                        marginLeft: "30px",
-                        backgroundColor: '#e0e0e0',
-                        borderRadius: "10px",
-                        animation: 'pulse 1.5s infinite'
-                    }}></div>
 
-                    <div className="row">
-                        <div className="col l6" style={{
-                            height: '450px',
-                            marginTop: "30px",
-                            marginLeft:"40px",
-                            width: "430px",                            
-                            backgroundColor: '#e0e0e0',
-                            borderTopLeftRadius: "10px",
-                            borderBottomLeftRadius: "10px",
-                            animation: 'pulse 1.5s infinite'
-                        }}></div>
-                        <div className="col l6" style={{
-                            height: '450px',
-                            marginTop: "30px",
-                            marginLeft:"1px",
-                            width: "430px",
-                            backgroundColor: '#e0e0e0',
-                            borderTopRightRadius: "10px",
-                            borderBottomRightRadius: "10px",
-                            animation: 'pulse 1.5s infinite'
-                        }}></div>
+            {/* Main Content Area */}
+            <div className="flex flex-col md:flex-row mt-8 space-y-8 md:space-y-0 md:space-x-8">
+                {/* Left Column */}
+                <div className="md:w-2/3">
+                    {/* Carousel/Banner Skeleton */}
+                    <div className="h-64 bg-gray-200 rounded-lg animate-custom-pulse ml-8"></div>
+
+                    {/* Search Bar Skeleton (Mobile) */}
+                    <div className=" h-8 bg-gray-200 rounded-lg mt-6 animate-custom-pulse  ml-8"></div>
+
+                    {/* Heading Skeleton */}
+                    <div className="h-8 w-48 bg-gray-200 rounded mt-8 animate-custom-pulse ml-8"></div>
+
+                    {/* Job Split View Skeleton */}
+                    <div className="flex flex-col md:flex-row mt-6 ml-10">
+                        {/* Left Job Panel */}
+                        <div className="w-full md:w-1/2 h-96 bg-gray-200 rounded-l-lg animate-custom-pulse max-w-md"></div>
+
+                        {/* Right Job Panel */}
+                        <div className="w-full md:w-1/2 h-96 bg-gray-200 rounded-r-lg animate-custom-pulse max-w-md"></div>
                     </div>
                 </div>
-                <div className="col l4">
-                    <div style={{                        
-                        height: '200px',
-                        marginTop: "30px",
-                        backgroundColor: '#e0e0e0',
-                        marginRight: '10px',
-                        borderRadius: "10px",
-                        animation: 'pulse 1.5s infinite'
-                    }}>
-                    </div>
-                    <div style={{
-                        height: '200px',
-                        marginTop: "30px",
-                        backgroundColor: '#e0e0e0',
-                        marginRight: '10px',
-                        borderRadius: "10px",
-                        animation: 'pulse 1.5s infinite'
-                    }}>
-                    </div>
-                    <div style={{
-                        height: '200px',
-                        marginTop: "30px",
-                        backgroundColor: '#e0e0e0',
-                        marginRight: '10px',
-                        borderRadius: "10px",
-                        animation: 'pulse 1.5s infinite'
-                    }}>
-                    </div>
+
+                {/* Right Column */}
+                <div className="md:w-1/3 space-y-6">
+                    {/* Three Profile Sidebar Skeletons */}
+                    {[1, 2, 3].map((item) => (
+                        <div
+                            key={item}
+                            className="h-48 bg-gray-200 rounded-lg animate-custom-pulse mr-3"
+                        ></div>
+                    ))}
                 </div>
-            </div>    
+            </div>
         </div>
     );
 };
