@@ -7,9 +7,11 @@ const Login = ({ setisSignup }) => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const navigate = useNavigate();
+    const [isLoading, setIsLoading] = useState(false);
 
     const handleLogin = async (e) => {
         e.preventDefault();
+        setIsLoading(true);
         try {
             const userCredential = await signInWithEmailAndPassword(auth, email, password);
             const user = userCredential.user;
@@ -21,8 +23,10 @@ const Login = ({ setisSignup }) => {
             }
         } catch (err) {
             alert('Login failed: ' + err.message);
+        } finally {
+            setIsLoading(false);
         }
-    };
+    }
 
     const handleForgotPassword = async () => {
         if (!email) {
@@ -134,9 +138,10 @@ const Login = ({ setisSignup }) => {
 
                     <button
                         type="submit"
-                        className="w-full bg-blue-500 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition-colors duration-200"
+                        className={`${isLoading ? 'opacity-50 cursor-not-allowed w-full bg-blue-500 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition-colors duration-200' : "w-full bg-blue-500 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition-colors duration-200"}`}
+                        
                     >
-                        Log In
+                        {isLoading ? 'Logging in...' : 'Log In'}
                     </button>
                 </form>
 
