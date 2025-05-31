@@ -4,6 +4,7 @@ import { auth } from '../firebase';
 import { Search, Menu, X, ChevronDown } from 'lucide-react';
 
 const Navbar = ({ user }) => {
+    
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const navigate = useNavigate();

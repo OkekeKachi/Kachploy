@@ -1,95 +1,167 @@
-import React, { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { auth } from '../firebase';
 import axios from 'axios';
 
-const JobDetails = () => {
-    const { jobId } = useParams();
+const EmployerDashboard = () => {
+    const [profilePic, setProfilePic] = useState(null);
+    const [name, setName] = useState('');
+    const [jobs, setJobs] = useState([]);
+    const navigate = useNavigate();
 
-    const [job, setJob] = useState(null);
-    const [user, setUser] = useState(null);
-    const [message, setMessage] = useState('');
-    const [applied, setApplied] = useState(false);
-    const [employeePrice, setEmployeePrice] = useState('');  // Store employee price
+    useEffect(() => {
+        const fetchProfileAndJobs = async () => {
+            const user = auth.currentUser;
+            if (!user) {
+                navigate('/login');
+                return;
+            }
 
-    React.useEffect(() => {
-        const fetchJobAndUser = async () => {
-            const res = await axios.get(`http://localhost:3000/jobs/${jobId}`);
-            const dbUser = await axios.get(`http://localhost:3000/users/getUser/${auth.currentUser.uid}`);
-            setJob(res.data.job);
-            setUser(dbUser);
+            try {
+                // Fetch user info
+                const res = await axios.get(`http://localhost:3000/users/getUser/${user.uid}`);
+                const userData = res.data.user;
+                setProfilePic(userData.profilePic);
+                setName(userData.fullName);
+
+                if (!userData.profileComplete) {
+                    navigate('/complete-profile');
+                    return;
+                }
+
+                // Fetch posted jobs
+                const jobsRes = await axios.get(`http://localhost:3000/jobs/employer/${user.uid}`);
+                const jobList = jobsRes.data.jobs || [];
+
+                // Add applicant count to each job
+                const jobsWithApplicants = await Promise.all(
+                    jobList.map(async (job) => {
+                        try {
+                            const appRes = await axios.get(`http://localhost:3000/applications/job/${job.id}`);
+                            return {
+                                ...job,
+                                applicantCount: appRes.data.applications?.length || 0,
+                            };
+                        } catch (err) {
+                            console.error(`Error fetching applications for job ${job.id}`, err);
+                            return { ...job, applicantCount: 0 };
+                        }
+                    })
+                );
+
+                setJobs(jobsWithApplicants);
+            } catch (err) {
+                console.error('Error:', err);
+            }
         };
-        fetchJobAndUser();
-    }, [jobId]);
 
-    const handleApply = async () => {
-        if (!user) {
-            alert('You must be logged in to apply');
-            return;
-        }
+        fetchProfileAndJobs();
+    }, [navigate]);
 
+    const handleDeleteJob = async (jobId) => {
         try {
-            // Post application with the employee's price if job is negotiable
-            await axios.post('http://localhost:3000/applications/apply', {
-                jobId,
-                proposal: job.proposals,
-                employeeId: auth.currentUser.uid,
-                fullName: user.data.user.fullName || 'Anonymous',
-                message,
-                employeePrice: job.isNegotiable ? employeePrice : null,  // Only send employeePrice if negotiable
-                status: "pending"
-            });
-            setApplied(true);
+            const response = await axios.delete(`http://localhost:3000/jobs/${jobId}`);
+            if (response.status === 200) {
+                setJobs(jobs.filter((job) => job.id !== jobId));
+            } else {
+                console.error('Failed to delete job');
+            }
         } catch (err) {
-            console.error('Application failed', err);
+            console.error('Error deleting job:', err);
         }
     };
 
-    if (!job) return <p>Loading...</p>;
-
     return (
         <div style={{ padding: '20px' }}>
-            <h2>{job.title}</h2>
-            <p><strong>Location:</strong> {job.location}</p>
-            <p><strong>Type:</strong> {job.jobType}</p>
-            <p>{job.description}</p>
-            <p><strong>Price: </strong>₦{job.price}</p>
-            {/* If the job is negotiable, request the employee's price */}
-            {job.isNegotiable ? (
-                <div>
-                    <label>
-                        <strong>Request Your Price:</strong>
-                        <input
-                            type="number"
-                            value={employeePrice}
-                            onChange={e => setEmployeePrice(e.target.value)}
-                            placeholder="Enter your price"
-                            min="0"
-                            required
-                        />
-                    </label>
+            <h1>Employer Dashboard</h1>
+
+            {profilePic && (
+                <div style={{ width: '100px', height: '100px', overflow: 'hidden', borderRadius: '50%' }}>
+                    <img
+                        src={profilePic}
+                        alt="Profile"
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
                 </div>
-            ) : (
-                <p><strong>This job has a fixed price. Negotiation is not allowed.</strong></p>
             )}
 
-            {applied ? (
-                <p style={{ color: 'green' }}>✅ Application submitted!</p>
+            <h3>Welcome {name}</h3>
+            <Link to="/post-job">Post a New Job</Link>
+
+            <h4 style={{ marginTop: '30px' }}>Your Posted Jobs</h4>
+
+            {jobs.length === 0 ? (
+                <p>You haven't posted any jobs yet.</p>
             ) : (
-                <div style={{ marginTop: '20px' }}>
-                    <textarea
-                        placeholder="Write a short message"
-                        value={message}
-                        onChange={e => setMessage(e.target.value)}
-                        rows="4"
-                        cols="50"
-                    />
-                    <br />
-                    <button onClick={handleApply} style={{ marginTop: '10px' }}>Apply</button>
-                </div>
+                <ul style={{ listStyle: 'none', padding: 0 }}>
+                    {jobs.map((job) => (
+                        <li
+                            key={job.id}
+                            style={{
+                                border: '1px solid #ccc',
+                                borderRadius: '10px',
+                                marginBottom: '10px',
+                                padding: '15px',
+                            }}
+                        >
+                            <h5>{job.title}</h5>
+                            <p><strong>Location:</strong> {job.location}</p>
+                            <p><strong>Type:</strong> {job.jobType}</p>
+                            <p><strong>Posted:</strong> {new Date(job.createdAt).toLocaleDateString()}</p>
+                            <p><strong>Price:</strong> ₦{job.price}</p>
+                            <p><strong>Status:</strong> {job.status}</p>
+                            <p><strong>Applicants:</strong> {job.applicantCount}</p>
+                            <p>{job.description}</p>
+
+                            <Link to={`/edit-job/${job.id}`}>
+                                <button
+                                    disabled={job.applicantCount > 0}
+                                    style={{
+                                        backgroundColor: job.applicantCount > 0 ? '#ccc' : '#007bff',
+                                        color: 'white',
+                                        border: 'none',
+                                        padding: '5px 10px',
+                                        borderRadius: '5px',
+                                        marginRight: '5px',
+                                        cursor: job.applicantCount > 0 ? 'not-allowed' : 'pointer',
+                                    }}
+                                >
+                                    Edit
+                                </button>
+                            </Link>
+
+                            <button
+                                onClick={() => handleDeleteJob(job.id)}
+                                disabled={job.applicantCount > 0}
+                                style={{
+                                    backgroundColor: job.applicantCount > 0 ? '#ccc' : 'red',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '5px 10px',
+                                    borderRadius: '5px',
+                                    marginRight: '5px',
+                                    cursor: job.applicantCount > 0 ? 'not-allowed' : 'pointer',
+                                }}
+                            >
+                                Delete Job
+                            </button>
+
+                            {job.status === 'open' ? (
+                                <Link to={`/employer/jobs/${job.id}/applications/${job.title}`}>
+                                    <button>View Applications</button>
+                                </Link>
+                            ) : (
+                                <button disabled style={{ backgroundColor: '#ccc', color: '#666', padding: '5px 10px', borderRadius: '5px' }}>
+                                    View Applications (Closed)
+                                </button>
+                            )}
+
+                        </li>
+                    ))}
+                </ul>
             )}
         </div>
     );
 };
 
-export default JobDetails;
+export default EmployerDashboard;

@@ -7,6 +7,7 @@ import JobSplitView from '../components/JobSplitView';
 import ProfileSidebar from '../components/profileSideBar';
 import { ChevronDown, Search, Menu, X } from 'lucide-react';
 import Navbar from '../components/Navbar';
+import EmployerNavbar from '../components/EmployerNavbar';
 const EmployeeDashboard = () => {
     const [isProfileComplete, setIsProfileComplete] = useState(true);
     const [jobs, setJobs] = useState([]);
@@ -134,7 +135,8 @@ const EmployeeDashboard = () => {
     return (
         <div className="min-h-screen bg-gray-50">
             {/* Top Navigation Bar */}
-            <Navbar/>
+            {/* <Navbar/> */}
+            <EmployerNavbar user={user} />
 
             {/* Main Content */}
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 ">

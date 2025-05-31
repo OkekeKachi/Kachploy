@@ -3,31 +3,4 @@ body {
     background: #ffffff;
     font-family: 'Roboto', sans-serif;
 }
-/* .logo-container.brand-logo{
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    
-}
 
-.logo-container.brand-logo .logo{
-    width: 20px;
-    margin-right: 10px;
-}
-
-.logo-container.brand-logo .logo-text{
-    font-size: 20px;
-    font-weight: bold;
-    color: #333;
-}
-.row.responsive-container {
-    width: 100%;
-}
-
-@media only screen and (min-width: 992px) {
-    .row.responsive-container {
-        margin: 0 auto;
-            max-width: 1080px;
-            width: 90%;
-    }
-} */
