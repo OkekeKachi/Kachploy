@@ -39,27 +39,48 @@ router.post("/register", verifyToken, async (req, res) => {
   const { uid, email } = req.user;
   const { fullName, phone, role, profileComplete } = req.body;
 
+  // Add the same formatting function as your frontend
+  const formatPhoneNumber = (phone) => {
+    if (!phone) return phone;
+
+    const digits = phone.replace(/\D/g, '');
+
+    if (digits.length === 10) {
+      return `+234${digits}`;
+    } else if (digits.length === 11 && digits.startsWith('0')) {
+      return `+234${digits.substring(1)}`;
+    } else if (digits.length === 13 && digits.startsWith('234')) {
+      return `+${digits}`;
+    } else if (phone.startsWith('+')) {
+      return phone;
+    }
+
+    return phone;
+  };
+
   try {
     const userRef = db.collection("users").doc(uid);
     const doc = await userRef.get();
 
     if (!doc.exists) {
+      await admin.auth().updateUser(uid, {
+        displayName: fullName,
+        phoneNumber: formatPhoneNumber(phone), // Format phone here too!
+      });
+
       await userRef.set({
-        email,
-        fullName,
-        phone,
         role,
         profileComplete,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+
+      console.log("✅ User registered and profile updated");
     } else {
       console.log("👤 User already exists");
       return res.status(200).send("User already registered");
     }
 
-    // Optionally trigger OTP or email verification here
-
-    res.status(200).send("User registered in DB");
+    res.status(200).send("User registered successfully");
   } catch (err) {
     console.error("Registration error:", err);
     res.status(500).send("Error registering user");
@@ -136,7 +157,19 @@ router.put('/update/:uid', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    await userRef.update(userData);
+    // Extract profilePic from userData to update Auth user
+    const { profilePic, ...firestoreData } = userData;
+
+    // Update Firebase Auth user profile if profilePic is provided
+    if (profilePic) {
+      await admin.auth().updateUser(uid, {
+        photoURL: profilePic,
+      });
+    }
+
+    // Update Firestore document (excluding profilePic since it's now in Auth)
+    await userRef.update(firestoreData);
+
     res.status(200).json({ message: 'Profile updated successfully' });
   } catch (error) {
     console.error('Error updating user:', error);

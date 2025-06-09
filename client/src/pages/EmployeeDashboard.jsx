@@ -30,6 +30,8 @@ const EmployeeDashboard = () => {
             }
 
             try {
+                console.log(currentUser);
+                
                 const [userRes, jobsRes, appsRes] = await Promise.all([
                     axios.get(`http://localhost:3000/users/getUser/${currentUser.uid}`),
                     axios.get('http://localhost:3000/jobs'),

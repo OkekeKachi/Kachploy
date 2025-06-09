@@ -2,16 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { auth } from '../firebase';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
-import { storage } from '../firebase'; 
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage"; // Add this import
-
-// Your other imports...
-
-
+import { storage } from '../firebase';
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const CompleteProfile = () => {
-    // const [name, setName] = useState('');
-    // const [phone, setPhone] = useState('');    
     const [role, setRole] = useState('');
     const [formData, setFormData] = useState({});
     const [loading, setLoading] = useState(true);
@@ -23,7 +17,7 @@ const CompleteProfile = () => {
         const fetchRole = async () => {
             const user = auth.currentUser;
             console.log(user);
-            
+
             if (!user) {
                 navigate('/login');
                 return;
@@ -32,11 +26,11 @@ const CompleteProfile = () => {
             try {
                 const response = await axios.get(`http://localhost:3000/users/getUser/${user.uid}`);
                 setRole(response.data.user.role);
-                // setName(response.data.user.name);
-                // setPhone(response.data.user.phone);
+
+                // Get data from both Auth and Firestore
                 setFormData({
-                    fullName: response.data.user.fullName,
-                    phone: response.data.user.phone
+                    fullName: user.displayName || '', // Get from Auth user
+                    phone: user.phoneNumber || '', // Get from Auth user
                 });
                 setLoading(false);
             } catch (error) {
@@ -54,6 +48,25 @@ const CompleteProfile = () => {
 
     const handleFileChange = (e) => {
         setProfilePic(e.target.files[0]);
+    };
+
+    // Format phone number to E.164 format for Firebase Auth
+    const formatPhoneNumber = (phone) => {
+        // Remove any non-digit characters
+        const digits = phone.replace(/\D/g, '');
+
+        // Add country code if missing (assuming Nigeria +234)
+        if (digits.length === 10) {
+            return `+234${digits}`;
+        } else if (digits.length === 11 && digits.startsWith('0')) {
+            return `+234${digits.substring(1)}`;
+        } else if (digits.length === 13 && digits.startsWith('234')) {
+            return `+${digits}`;
+        } else if (phone.startsWith('+')) {
+            return phone; // Already formatted
+        }
+
+        return phone; // Return as-is if can't format
     };
 
     const handleSubmit = async (e) => {
@@ -75,18 +88,18 @@ const CompleteProfile = () => {
                 : [];
 
             const payload = {
-                ...formData,                
-                profilePic: imageUrl,
+                ...formData,
+                fullName: formData.fullName, // Will update Auth displayName
+                phone: formatPhoneNumber(formData.phone), // Will update Auth phoneNumber
+                profilePic: imageUrl, // Will update Auth photoURL
                 profileComplete: true,
             };
 
             if (formattedSkills && formattedSkills.length > 0) {
                 payload.skills = formattedSkills;
             }
-           
 
-
-            await axios.put(`http://localhost:3000/users/update/${user.uid}`, payload)
+            await axios.put(`http://localhost:3000/users/update/${user.uid}`, payload);
             alert('Profile completed successfully!');
             navigate('/dashboard');
         } catch (err) {
@@ -105,16 +118,16 @@ const CompleteProfile = () => {
                 <input
                     type="text"
                     name="fullName"
-                    value={formData.fullName}
+                    value={formData.fullName || ''}
                     placeholder="Full Name"
                     onChange={handleChange}
                     required
                 />
                 <input
-                    type="text"
+                    type="tel"
                     name="phone"
-                    value={formData.phone}
-                    placeholder="Phone Number"
+                    value={formData.phone || ''}
+                    placeholder="Phone Number (e.g. 08012345678)"
                     onChange={handleChange}
                     required
                 />
@@ -126,7 +139,7 @@ const CompleteProfile = () => {
                     required
                 />
                 <input type="file" accept="image/*" onChange={handleFileChange} />
-               
+
                 {/* Employee-specific fields */}
                 {role === 'employee' && (
                     <>
@@ -151,7 +164,6 @@ const CompleteProfile = () => {
                             onChange={handleChange}
                             required
                         />
-                        
                     </>
                 )}
 

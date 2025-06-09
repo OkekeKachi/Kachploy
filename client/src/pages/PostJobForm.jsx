@@ -3,7 +3,7 @@ import { auth } from '../firebase';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import EmployerNavbar from '../components/EmployerNavbar';
-import { Briefcase, MapPin, Clock, DollarSign, Calendar, Users, X, Plus } from 'lucide-react';
+import { Briefcase, MapPin, Clock, DollarSign, Calendar, Users, X, Plus, CheckSquare, List } from 'lucide-react';
 
 // Mock skill suggestions - replace with your actual import
 const skillSuggestions = [
@@ -11,6 +11,26 @@ const skillSuggestions = [
     'MongoDB', 'PostgreSQL', 'AWS', 'Docker', 'Git', 'GraphQL',
     'Vue.js', 'Angular', 'Express.js', 'Django', 'Flask', 'MySQL'
 ];
+
+// Move InputField component outside to prevent re-creation
+const InputField = ({ icon: Icon, label, name, type = 'text', placeholder, required = false, className = '', value, onChange, error }) => (
+    <div className="space-y-2">
+        <label className="flex items-center text-sm font-medium text-gray-700">
+            <Icon className="w-4 h-4 mr-2 text-gray-500" />
+            {label}
+            {required && <span className="text-red-500 ml-1">*</span>}
+        </label>
+        <input
+            type={type}
+            name={name}
+            value={value}
+            onChange={onChange}
+            placeholder={placeholder}
+            className={`w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors ${error ? 'border-red-500' : ''} ${className}`}
+        />
+        {error && <p className="text-sm text-red-600">{error}</p>}
+    </div>
+);
 
 const PostJobForm = () => {
     const [formData, setFormData] = useState({
@@ -24,10 +44,14 @@ const PostJobForm = () => {
         price: '',
         negotiable: 'no',
         skillsRequired: [],
+        requirements: [],
+        responsibilities: [],
     });
 
     const [user, setUser] = useState({});
     const [skillInput, setSkillInput] = useState('');
+    const [requirementInput, setRequirementInput] = useState('');
+    const [responsibilityInput, setResponsibilityInput] = useState('');
     const [errors, setErrors] = useState({});
     const [loading, setLoading] = useState(true);
     const navigate = useNavigate();
@@ -44,8 +68,6 @@ const PostJobForm = () => {
                     setUser(userData);
                 } else {
                     console.log('No authenticated user found');
-                    // Optionally redirect to login
-                    // navigate('/login');
                 }
             } catch (error) {
                 console.error('Error fetching user:', error);
@@ -54,36 +76,30 @@ const PostJobForm = () => {
             }
         };
 
-        // Only fetch if auth is ready
         const unsubscribe = auth.onAuthStateChanged((authUser) => {
             if (authUser) {
                 fetchUser();
             } else {
                 setLoading(false);
-                // Handle unauthenticated state
             }
         });
 
-        return () => unsubscribe(); // Cleanup subscription
-    }, []); // Empty dependency array - only run once on mount
+        return () => unsubscribe();
+    }, []);
 
     const handleChange = (e) => {
+        const { name, value } = e.target;
         setFormData(prev => ({
             ...prev,
-            [e.target.name]: e.target.value,
+            [name]: value,
         }));
-        // Clear error when user starts typing
-        if (errors[e.target.name]) {
-            setErrors(prev => ({ ...prev, [e.target.name]: '' }));
+        if (errors[name]) {
+            setErrors(prev => ({ ...prev, [name]: '' }));
         }
     };
 
-    const handleSkillInput = (e) => {
-        setSkillInput(e.target.value);
-    };
-
     const addSkill = (skill) => {
-        if (!formData.skillsRequired.includes(skill)) {
+        if (skill && !formData.skillsRequired.includes(skill)) {
             setFormData(prev => ({
                 ...prev,
                 skillsRequired: [...prev.skillsRequired, skill],
@@ -96,6 +112,40 @@ const PostJobForm = () => {
         setFormData(prev => ({
             ...prev,
             skillsRequired: prev.skillsRequired.filter(s => s !== skill),
+        }));
+    };
+
+    const addRequirement = () => {
+        if (requirementInput.trim() && !formData.requirements.includes(requirementInput.trim())) {
+            setFormData(prev => ({
+                ...prev,
+                requirements: [...prev.requirements, requirementInput.trim()],
+            }));
+            setRequirementInput('');
+        }
+    };
+
+    const removeRequirement = (requirement) => {
+        setFormData(prev => ({
+            ...prev,
+            requirements: prev.requirements.filter(r => r !== requirement),
+        }));
+    };
+
+    const addResponsibility = () => {
+        if (responsibilityInput.trim() && !formData.responsibilities.includes(responsibilityInput.trim())) {
+            setFormData(prev => ({
+                ...prev,
+                responsibilities: [...prev.responsibilities, responsibilityInput.trim()],
+            }));
+            setResponsibilityInput('');
+        }
+    };
+
+    const removeResponsibility = (responsibility) => {
+        setFormData(prev => ({
+            ...prev,
+            responsibilities: prev.responsibilities.filter(r => r !== responsibility),
         }));
     };
 
@@ -145,27 +195,6 @@ const PostJobForm = () => {
         ).slice(0, 6)
         : [];
 
-    const InputField = ({ icon: Icon, label, name, type = 'text', placeholder, required = false, className = '' }) => (
-        <div className="space-y-2">
-            <label className="flex items-center text-sm font-medium text-gray-700">
-                <Icon className="w-4 h-4 mr-2 text-gray-500" />
-                {label}
-                {required && <span className="text-red-500 ml-1">*</span>}
-            </label>
-            <input
-                type={type}
-                name={name}
-                value={formData[name]}
-                onChange={handleChange}
-                placeholder={placeholder}
-                required={required}
-                className={`w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors ${errors[name] ? 'border-red-500' : ''} ${className}`}
-            />
-            {errors[name] && <p className="text-sm text-red-600">{errors[name]}</p>}
-        </div>
-    );
-
-    // Show loading state while fetching user
     if (loading) {
         return (
             <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -178,10 +207,10 @@ const PostJobForm = () => {
     }
 
     return (
-        <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
+        <div className="min-h-screen bg-gray-50  ">
             <EmployerNavbar user={user} />
+            <br /><br />    
             <div className="max-w-3xl mx-auto">
-                {/* Header */}
                 <div className="text-center mb-8">
                     <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 rounded-full mb-4">
                         <Briefcase className="w-8 h-8 text-blue-600" />
@@ -190,8 +219,7 @@ const PostJobForm = () => {
                     <p className="text-gray-600">Fill in the details below to create your job posting</p>
                 </div>
 
-                {/* Form */}
-                <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+                <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-lg overflow-hidden">
                     <div className="p-8 space-y-6">
                         {/* Job Details Section */}
                         <div className="border-b border-gray-200 pb-6">
@@ -204,6 +232,9 @@ const PostJobForm = () => {
                                         name="title"
                                         placeholder="e.g. Senior React Developer"
                                         required
+                                        value={formData.title}
+                                        onChange={handleChange}
+                                        error={errors.title}
                                     />
                                 </div>
                                 <InputField
@@ -212,6 +243,9 @@ const PostJobForm = () => {
                                     name="location"
                                     placeholder="e.g. New York, NY or Remote"
                                     required
+                                    value={formData.location}
+                                    onChange={handleChange}
+                                    error={errors.location}
                                 />
                                 <div className="space-y-2">
                                     <label className="flex items-center text-sm font-medium text-gray-700">
@@ -223,7 +257,6 @@ const PostJobForm = () => {
                                         name="jobType"
                                         value={formData.jobType}
                                         onChange={handleChange}
-                                        required
                                         className={`w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors ${errors.jobType ? 'border-red-500' : ''}`}
                                     >
                                         <option value="">Select job type</option>
@@ -246,11 +279,120 @@ const PostJobForm = () => {
                                     value={formData.description}
                                     onChange={handleChange}
                                     placeholder="Describe the role, responsibilities, and requirements..."
-                                    required
                                     rows={6}
                                     className={`w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors resize-none ${errors.description ? 'border-red-500' : ''}`}
                                 />
                                 {errors.description && <p className="text-sm text-red-600">{errors.description}</p>}
+                            </div>
+                        </div>
+
+                        {/* Job Requirements Section */}
+                        <div className="border-b border-gray-200 pb-6">
+                            <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
+                                <CheckSquare className="w-5 h-5 mr-2 text-gray-600" />
+                                Job Requirements
+                            </h2>
+                            <div className="space-y-4">
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        placeholder="e.g. Bachelor's degree in Computer Science"
+                                        value={requirementInput}
+                                        onChange={(e) => setRequirementInput(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                addRequirement();
+                                            }
+                                        }}
+                                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={addRequirement}
+                                        className="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        <Plus className="w-5 h-5" />
+                                    </button>
+                                </div>
+
+                                {formData.requirements.length > 0 && (
+                                    <div>
+                                        <p className="text-sm font-medium text-gray-700 mb-2">Added Requirements:</p>
+                                        <div className="space-y-2">
+                                            {formData.requirements.map((requirement, index) => (
+                                                <div
+                                                    key={index}
+                                                    className="flex items-start justify-between p-3 bg-gray-50 rounded-lg border"
+                                                >
+                                                    <span className="text-sm text-gray-800 flex-1">{requirement}</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removeRequirement(requirement)}
+                                                        className="ml-2 text-red-600 hover:text-red-800 flex-shrink-0"
+                                                    >
+                                                        <X className="w-4 h-4" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Job Responsibilities Section */}
+                        <div className="border-b border-gray-200 pb-6">
+                            <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
+                                <List className="w-5 h-5 mr-2 text-gray-600" />
+                                Job Responsibilities
+                            </h2>
+                            <div className="space-y-4">
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        placeholder="e.g. Develop and maintain web applications"
+                                        value={responsibilityInput}
+                                        onChange={(e) => setResponsibilityInput(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                addResponsibility();
+                                            }
+                                        }}
+                                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={addResponsibility}
+                                        className="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        <Plus className="w-5 h-5" />
+                                    </button>
+                                </div>
+
+                                {formData.responsibilities.length > 0 && (
+                                    <div>
+                                        <p className="text-sm font-medium text-gray-700 mb-2">Added Responsibilities:</p>
+                                        <div className="space-y-2">
+                                            {formData.responsibilities.map((responsibility, index) => (
+                                                <div
+                                                    key={index}
+                                                    className="flex items-start justify-between p-3 bg-gray-50 rounded-lg border"
+                                                >
+                                                    <span className="text-sm text-gray-800 flex-1">{responsibility}</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removeResponsibility(responsibility)}
+                                                        className="ml-2 text-red-600 hover:text-red-800 flex-shrink-0"
+                                                    >
+                                                        <X className="w-4 h-4" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
 
@@ -264,6 +406,9 @@ const PostJobForm = () => {
                                     name="applicationDeadline"
                                     type="date"
                                     required
+                                    value={formData.applicationDeadline}
+                                    onChange={handleChange}
+                                    error={errors.applicationDeadline}
                                 />
                                 <InputField
                                     icon={Clock}
@@ -271,12 +416,18 @@ const PostJobForm = () => {
                                     name="jobStartDate"
                                     type="date"
                                     required
+                                    value={formData.jobStartDate}
+                                    onChange={handleChange}
+                                    error={errors.jobStartDate}
                                 />
                                 <InputField
                                     icon={Calendar}
                                     label="Expected End Date"
                                     name="expectedEndDate"
                                     type="date"
+                                    value={formData.expectedEndDate}
+                                    onChange={handleChange}
+                                    error={errors.expectedEndDate}
                                 />
                             </div>
                         </div>
@@ -292,6 +443,9 @@ const PostJobForm = () => {
                                     type="number"
                                     placeholder="5000"
                                     required
+                                    value={formData.price}
+                                    onChange={handleChange}
+                                    error={errors.price}
                                 />
                                 <div className="space-y-2">
                                     <label className="block text-sm font-medium text-gray-700">
@@ -314,29 +468,33 @@ const PostJobForm = () => {
                         <div className="pb-6">
                             <h2 className="text-xl font-semibold text-gray-900 mb-4">Required Skills</h2>
                             <div className="space-y-4">
-                                <div className="relative">
+                                <div className="flex gap-2">
                                     <input
                                         type="text"
                                         placeholder="Type to search skills..."
                                         value={skillInput}
-                                        onChange={handleSkillInput}
+                                        onChange={(e) => setSkillInput(e.target.value)}
                                         onKeyDown={(e) => {
                                             if (e.key === 'Enter') {
                                                 e.preventDefault();
-                                                if (skillInput.trim()) addSkill(skillInput.trim());
+                                                if (skillInput.trim()) {
+                                                    addSkill(skillInput.trim());
+                                                }
                                             }
                                         }}
-                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                                     />
-                                    {skillInput.trim() && (
-                                        <button
-                                            type="button"
-                                            onClick={() => skillInput.trim() && addSkill(skillInput.trim())}
-                                            className="absolute right-3 top-1/2 transform -translate-y-1/2 text-blue-600 hover:text-blue-700"
-                                        >
-                                            <Plus className="w-5 h-5" />
-                                        </button>
-                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (skillInput.trim()) {
+                                                addSkill(skillInput.trim());
+                                            }
+                                        }}
+                                        className="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        <Plus className="w-5 h-5" />
+                                    </button>
                                 </div>
 
                                 {/* Skill Suggestions */}
@@ -387,14 +545,14 @@ const PostJobForm = () => {
                         {/* Submit Button */}
                         <div className="pt-6">
                             <button
-                                onClick={handleSubmit}
+                                type="submit"
                                 className="w-full bg-blue-600 text-white py-4 px-6 rounded-lg font-semibold hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
                             >
                                 Post Job
                             </button>
                         </div>
                     </div>
-                </div>
+                </form>
             </div>
         </div>
     );

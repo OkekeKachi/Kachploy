@@ -164,7 +164,7 @@ const EmployerDashboard = () => {
     };
 
     const handleEditJob = (jobId) => {
-        alert(`Redirecting to edit job ${jobId}...`);
+        navigate(`/edit-job/${jobId}`)
     };
 
     const handleViewApplications = (jobId, jobTitle) => {

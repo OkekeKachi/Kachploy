@@ -4,6 +4,8 @@ import { auth } from '../firebase';
 import axios from 'axios';
 import { MapPin, Briefcase, DollarSign, Clock, CheckCircle, AlertCircle, Building, Users, Calendar, Star, Send } from 'lucide-react';
 import Navbar from '../components/Navbar';
+import EmployerNavbar from '../components/EmployerNavbar';
+
 
 const JobDetails = () => {
     const { jobId } = useParams();
@@ -114,8 +116,10 @@ const JobDetails = () => {
     return (
         <div>
             {/* Use the extracted Navbar component */}
-            <Navbar user={user} />
-
+            {/* <Navbar user={user} /> */}
+            <EmployerNavbar user={user}/>
+            
+            
             <div className="min-h-screen bg-gradient-to-br from-white-900 via-white-800 to-white-900">
                 {/* Hero Section */}
                 <div className="relative overflow-hidden">
@@ -144,7 +148,7 @@ const JobDetails = () => {
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <Users className="w-6 h-6" />
-                                            <span>{job.applicants} applicants</span>
+                                            <span>{job.proposal} applicants</span>
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <Star className="w-6 h-6 fill-yellow-400 text-yellow-400" />
@@ -158,8 +162,8 @@ const JobDetails = () => {
                                     <div className="bg-white/10 backdrop-blur-md rounded-2xl p-8 border border-white/20">
                                         <div className="text-center">
                                             <div className="flex items-center justify-center gap-2 mb-2">
-                                                <DollarSign className="w-8 h-8 text-green-400" />
-                                                <span className="text-4xl font-bold text-white">₦{job.price?.toLocaleString()}</span>
+                                                {/* <DollarSign className="w-8 h-8 text-green-400" /> */}
+                                                <span className="text-4xl font-bold text-white"> <span className='text-green-400'>₦</span> {job.price?.toLocaleString()}</span>
                                             </div>
                                             {job.isNegotiable ? (
                                                 <div className="flex items-center justify-center gap-2 text-green-300">
@@ -208,7 +212,7 @@ const JobDetails = () => {
                                             <div className="w-8 h-8 bg-red-100 rounded-lg flex items-center justify-center">
                                                 <CheckCircle className="w-5 h-5 text-red-600" />
                                             </div>
-                                            Requirements
+                                            Skills Required
                                         </h3>
                                         <ul className="space-y-3">
                                             {job.skillsRequired.map((req, index) => (
@@ -225,17 +229,33 @@ const JobDetails = () => {
                                             <div className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center">
                                                 <Star className="w-5 h-5 text-green-600" />
                                             </div>
-                                            Benefits
+                                            Basic Requirements
                                         </h3>
-                                        {/* <ul className="space-y-3">
-                                        {job.benefits.map((benefit, index) => (
+                                        <ul className="space-y-3">
+                                        {job.requirements.map((benefit, index) => (
                                             <li key={index} className="flex items-start gap-3">
                                                 <div className="w-2 h-2 bg-green-600 rounded-full mt-3 flex-shrink-0"></div>
                                                 <span className="text-gray-700 text-lg">{benefit}</span>
                                             </li>
                                         ))}
-                                    </ul> */}
+                                        </ul>
                                     </div>
+                                    <div className="bg-white/95 col-span-2 backdrop-blur-sm rounded-2xl shadow-2xl p-8 border border-white/20">
+                                        <h3 className="text-xl font-bold text-gray-900 mb-6 flex items-center gap-3">
+                                            <div className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center">
+                                                <Star className="w-5 h-5 text-green-600" />
+                                            </div>
+                                            Responsibilities
+                                        </h3>
+                                        <ul className="space-y-3">
+                                            {job.responsibilities.map((benefit, index) => (
+                                                <li key={index} className="flex items-start gap-3">
+                                                    <div className="w-2 h-2 bg-green-600 rounded-full mt-3 flex-shrink-0"></div>
+                                                    <span className="text-gray-700 text-lg">{benefit}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div><br />
                                 </div>
                             </div>
 
