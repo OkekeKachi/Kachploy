@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import api from '../api';
+import InterviewPanel from '../components/InterviewPanel';
 
 // STAGE 5G: canonical application statuses. The canonical spellings are
 // `accepted` and `rejected`; this component used to write the title-cased
@@ -66,6 +67,54 @@ const ViewJobApplications = () => {
     // first await, so the second click returns immediately.
     const hiringInFlightRef = useRef(false);
 
+    // STAGE 7E: the employer-side interview section.
+    //
+    // `interviews` is every interview on THIS JOB, fetched once and grouped by
+    // applicationId below, rather than one request per applicant card. The page
+    // already holds the whole applicant list, so a per-card fetch would be an N+1
+    // over a list that is routinely long -- the same pattern Stage 4 documented for
+    // listApplicationsForEmployee.
+    //
+    // GET /interviews/job/:jobId is guarded by the existing requireJobOwner, and this
+    // page is already the employer's own job (the applications read below is
+    // guarded by the same guard), so no new authorization decision is made here. A
+    // failure is reported on the page rather than only logged, matching Stage 5I-1.
+    const [interviews, setInterviews] = useState([]);
+    const [interviewsError, setInterviewsError] = useState('');
+    const [isLoadingInterviews, setIsLoadingInterviews] = useState(true);
+
+    const fetchInterviews = useCallback(async () => {
+        try {
+            const res = await api.get(`/interviews/job/${jobId}`);
+            setInterviews(res.data.interviews || []);
+            setInterviewsError('');
+            return true;
+        } catch (err) {
+            console.error('Error fetching interviews:', err);
+            setInterviewsError(
+                'Interviews could not be loaded. Scheduling is unavailable until they are.'
+            );
+            return false;
+        } finally {
+            setIsLoadingInterviews(false);
+        }
+    }, [jobId]);
+
+    // applicationId -> the interviews recorded against it. `useMemo` so the object
+    // identity is stable across renders: it is passed to every card, and rebuilding
+    // it on each render would give each panel a new `interviews` prop every time.
+    const interviewsByApplication = useMemo(() => {
+        const grouped = {};
+
+        interviews.forEach((interview) => {
+            if (!interview.applicationId) return;
+            if (!grouped[interview.applicationId]) grouped[interview.applicationId] = [];
+            grouped[interview.applicationId].push(interview);
+        });
+
+        return grouped;
+    }, [interviews]);
+
     // STAGE 5I-1: hoisted out of the effect below so changeStatus can reuse the
     // identical request and state update after a partial failure. It reports
     // success as a boolean instead of throwing, so a failed refresh cannot mask
@@ -83,7 +132,8 @@ const ViewJobApplications = () => {
 
     useEffect(() => {
         fetchApplications();
-    }, [fetchApplications]);
+        fetchInterviews();
+    }, [fetchApplications, fetchInterviews]);
 
     const changeStatus = async (hiredApplicant) => {
         // STAGE 5I-1: the synchronous guard, before any await, so two clicks in
@@ -170,6 +220,15 @@ const ViewJobApplications = () => {
                     {error}
                 </p>
             )}
+            {/* STAGE 7E: an interview-read failure is reported separately from the
+                applications read above, because the two are independent: the applicant
+                list is still usable and the hire button still works when only the
+                interviews request failed. */}
+            {interviewsError && (
+                <p role="alert" style={{ color: '#dc2626', marginBottom: '12px' }}>
+                    {interviewsError}
+                </p>
+            )}
             {applications.length === 0 ? (
                 <p>No applications found for this job.</p>
             ) : (
@@ -200,6 +259,19 @@ const ViewJobApplications = () => {
                             >
                                 {canonicalAppStatus(app.status) === ACCEPTED ? 'Hired' : 'Hire'}
                             </button>
+                            {/* STAGE 7E. Deliberately placed after the hire button and
+                                independent of it: an interview is not a hire. This
+                                writes no application status, changes nothing on
+                                `app.status`, and does not enable or disable the Hire
+                                button -- Stage 7C models the interview as a separate
+                                fact about the application, not a new state of it. */}
+                            <InterviewPanel
+                                applicationId={app.id}
+                                jobId={jobId}
+                                interviews={interviewsByApplication[app.id] || []}
+                                isLoading={isLoadingInterviews}
+                                onChanged={fetchInterviews}
+                            />
                         </li>
                     ))}
                 </ul>
