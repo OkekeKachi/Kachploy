@@ -74,6 +74,30 @@ function task(overrides = {}) {
 }
 
 /**
+ * A stored employment document, modelling exactly what a successful hire writes.
+ *
+ * STAGE 7A. Seeding through the API is not possible for this resource -- there is
+ * no create endpoint -- so the read tests seed this builder while the hire tests
+ * assert against the document the hire itself produced. `startDate` is the ISO
+ * string taken from the job's `jobStartDate`, which is what
+ * employmentService.resolveStartDate stores when the job has one; the fallback to
+ * a serverTimestamp() Timestamp is asserted separately in test/employments.test.js
+ * and is deliberately not modelled here.
+ */
+function employment(overrides = {}) {
+  return {
+    employerId: 'employer-1',
+    employeeId: 'employee-1',
+    jobId: 'job-1',
+    applicationId: 'app-1',
+    startDate: '2026-10-05',
+    endDate: null,
+    status: 'active',
+    ...overrides,
+  };
+}
+
+/**
  * A stored interview document, modelling exactly what a successful create writes.
  *
  * STAGE 7C. Seeded directly rather than created through the API, because the read
@@ -98,4 +122,4 @@ function interview(overrides = {}) {
   };
 }
 
-module.exports = { job, user, application, task, interview };
+module.exports = { job, user, application, task, employment, interview };

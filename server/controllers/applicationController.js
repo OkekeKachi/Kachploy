@@ -25,6 +25,11 @@
 // Stage 5B added the countApplicationsByJob handler and closed the Stage 5A
 // IDOR-01 finding on listApplicationsForJob, whose guard moved into the router.
 // Neither change alters a response shape.
+//
+// STAGE 7A: updateApplicationStatus now passes a hire context built from
+// req.user and the guard-loaded application/job, which is where a hire records
+// its employment. Every request, response, status code and error body on this
+// router is unchanged, and no other handler was touched.
 
 const applicationService = require('../services/applicationService');
 
@@ -160,13 +165,43 @@ const listApplicationsForJob = async (req, res) => {
  * The catch below still echoes err.message to the client as a second key and
  * still logs with console.log rather than console.error. Both are preserved
  * verbatim; normalising them is a Stage 6 candidate.
+ *
+ * STAGE 7A: this is where the hire flow's employment is assembled. The third
+ * argument is the hire context, and every field in it is taken from the verified
+ * token or from the two documents requireApplicationReviewer has already loaded
+ * onto the request -- never from the body:
+ *
+ *   employerId     req.user.uid          the reviewer; the guard has already
+ *                                        established job.postedBy === uid
+ *   employeeId     req.application.employeeId
+ *   jobId          req.application.jobId
+ *   jobStartDate   req.job.jobStartDate  the job's own start date, which
+ *                                        employmentService uses for startDate
+ *                                        and falls back to a serverTimestamp
+ *                                        when the job has none
+ *   previousStatus req.application.status as it stood before this write, which
+ *                                        is what stops a repeated `accepted`
+ *                                        appending a second employment
+ *
+ * The response is unchanged: still 200 `{ message: 'Status updated successfully' }`
+ * on the same conditions as before. No client field is added, so the body a
+ * caller sends is still just `{ status }`, and the hire the client performs is
+ * still the same three calls. See services/applicationService.js
+ * updateApplicationStatus for the ordering and for why a failure to write the
+ * employment is logged rather than returned.
  */
 const updateApplicationStatus = async (req, res) => {
     const applicationId = req.params.id;
     const newStatus = req.body.status;
 
     try {
-        await applicationService.updateApplicationStatus(applicationId, newStatus);
+        await applicationService.updateApplicationStatus(applicationId, newStatus, {
+            employerId: req.user.uid,
+            employeeId: req.application.employeeId,
+            jobId: req.application.jobId,
+            jobStartDate: req.job.jobStartDate,
+            previousStatus: req.application.status,
+        });
 
         res.status(200).json({ message: 'Status updated successfully' });
     } catch (err) {

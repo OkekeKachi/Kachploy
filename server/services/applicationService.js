@@ -51,9 +51,19 @@
 // removed the third one -- withdrawApplication's parent-job counter write -- so
 // the `admin` import went with it. Stage 5H brought it back for one reason:
 // applyToJob needs `admin.firestore.FieldValue.serverTimestamp()`.
+//
+// STAGE 7A added the `employmentService` import, which is the only new
+// dependency in this file and the only cross-collection call it makes in the
+// hire path. It is imported here rather than in the controller on purpose:
+// recording the employment is business orchestration that follows the status
+// write, and the controllers in this codebase stay HTTP-only with one service
+// call per handler. The `employments` collection itself is reached exclusively
+// through employmentRepository from employmentService -- this file never names
+// the collection. See updateApplicationStatus for the integration point.
 
 const { db, admin } = require('../config/firebase');
 const applicationRepository = require('../repositories/applicationRepository');
+const employmentService = require('./employmentService');
 
 /**
  * A field required by an endpoint is missing. Surfaces as a 400 carrying this
@@ -313,14 +323,62 @@ const APPLICATION_STATUSES = ['pending', 'accepted', 'rejected'];
  * 'Status is required' message for `{}` rather than reporting it as an
  * unrecognised status.
  *
- * The console.log("heyyy") after the write is debug output, kept in place so the
- * success-path ordering is unchanged.
+ * The console.log("heyyy") that used to sit between the write and the return was
+ * removed in Stage 7B, leaving the two writes -- the status update and, on a hire,
+ * the employment record -- as the only work this function does. It was pure debug
+ * output: no test asserted on it (the harness only filters morgan's HTTP lines),
+ * it carried no information the caller could use, and it never ran on a failure
+ * path. Removing it changes no status code, no response body and no write.
  *
  * The router's requireApplicationReviewer guard is what turns a missing
  * application into a 404 before this runs, which is why there is no existence
  * check here.
+ *
+ * ---------------------------------------------------------------------------
+ * STAGE 7A: the hire-flow integration point.
+ *
+ * `hireContext` is optional and defaults to null, so the function's existing
+ * two-argument contract -- and the response shape, status code and error bodies
+ * the applications tests pin -- are unchanged for any caller that does not supply
+ * one. The single live caller (applicationController.updateApplicationStatus)
+ * always does, passing only facts the requireApplicationReviewer guard has
+ * already loaded and verified: employerId from the verified token,
+ * employeeId/jobId from the application document, jobStartDate from the job, and
+ * previousStatus from the application as it stood before this write. No client
+ * field is read here, so a caller cannot choose who is employed.
+ *
+ * WHY HERE. Accepting an application IS the hire, in this codebase's own terms:
+ * `accepted` is the only application status that means hired
+ * (middleware/auth.js's requireTaskAssignment already gates task assignment on
+ * it, and HiredJobs.jsx/MyApplications.jsx render it as employment). The hire
+ * itself is a three-call sequence orchestrated by the client
+ * (ViewJobApplications.jsx changeStatus): restatus every applicant, create the
+ * task, then mark the job filled. This write is the only step that identifies both
+ * parties unambiguously -- the task step names an assignee without naming an
+ * application, and the job-status step names neither -- so it is the only place
+ * an employment can be built with all four of its identity fields.
+ *
+ * WHY IT CANNOT CREATE ONE FOR A FAILED HIRE: it runs strictly after the status
+ * write has resolved. An unknown status, a missing status, a 403 from the guard
+ * and a failed write all return or throw before this block is entered, so
+ * "no employment when the hire fails" is structural rather than a rollback.
+ *
+ * NO TRANSACTION, deliberately (Stage 7A forbids adding one). The status write and
+ * the employment add are therefore two independent writes that can diverge if the
+ * process dies between them: an application can be accepted with no employment.
+ * A transaction would close that window but would also change the observable
+ * behaviour of this endpoint, which is out of scope.
+ *
+ * WHY A FAILURE HERE IS LOGGED AND SWALLOWED. The hire has already succeeded by
+ * this point -- the application is accepted -- so rethrowing would report a
+ * completed hire as a failed one. The client would then render "the hire did not
+ * complete", re-send the same status, and (because the application is already
+ * accepted) get no employment either time: a loud, wrong error with no repair
+ * path. The write failure is logged instead, so it stays observable in the server
+ * log rather than becoming a false client-side failure. A repair path belongs with
+ * the deferred employment lifecycle work.
  */
-const updateApplicationStatus = async (applicationId, newStatus) => {
+const updateApplicationStatus = async (applicationId, newStatus, hireContext = null) => {
     if (!newStatus) throw new ApplicationValidationError('Status is required');
 
     if (!APPLICATION_STATUSES.includes(newStatus)) {
@@ -330,7 +388,18 @@ const updateApplicationStatus = async (applicationId, newStatus) => {
     }
 
     await applicationRepository.updateApplicationStatusField(applicationId, newStatus);
-    console.log("heyyy");
+
+    if (hireContext) {
+        try {
+            await employmentService.createEmploymentFromHire({
+                ...hireContext,
+                applicationId,
+                newStatus,
+            });
+        } catch (err) {
+            console.error('Hire succeeded but no employment record was written:', err);
+        }
+    }
 };
 
 /**

@@ -81,8 +81,9 @@ go through `repositories/authRepository.js` since 4E, while `verifyIdToken` stay
 in `middleware/auth.js` (`protect`, `:35`) because it is token verification whose
 only caller also owns the `Bearer` parsing and the two plain-text 401 responses.
 
-Collections: `users`, `jobs`, `applications`, `tasks`, `interviews` (Stage 7C). No
-transactions, no schema validation, no centralized error handling (Stage 6).
+Collections: `users`, `jobs`, `applications`, `tasks`, `employments` (Stage 7A),
+`interviews` (Stage 7C). No transactions, no schema validation, no centralized error
+handling (Stage 6).
 
 ---
 
@@ -108,7 +109,7 @@ transactions, no schema validation, no centralized error handling (Stage 6).
 guards respond `404` when the resource does not exist and `403` when the caller
 is not permitted.
 
-**All 28 route registrations require authentication** — every `router.*` call in
+**All 30 route registrations require authentication** — every `router.*` call in
 `routes/` lists `protect` as its first middleware. The sweep in
 `test/security.test.js` probes 20 of them with both a missing and an invalid token
 (`ENDPOINTS`, which now includes the four Stage 7C routes), and `test/users.test.js`
@@ -139,6 +140,10 @@ body are ignored.
 | DELETE | `/applications/:applicationId` | `requireApplicationOwner` |
 | POST | `/applications/tasks` | `requireTaskAssignment` |
 | POST | `/tasks` | `requireTaskAssignment` |
+| GET | `/tasks/employee/:uid` | `requireSelfParam('uid')` (Stage 6B) |
+| GET | `/tasks/job/:jobId` | `requireJobOwner` (Stage 6B) |
+| GET | `/employments/employee/:uid` | `requireSelfParam('uid')` (Stage 7A) |
+| GET | `/employments/employer/:uid` | `requireSelfParam('uid')` (Stage 7A) |
 | POST | `/interviews` | `requireInterviewAuthor` (Stage 7C) |
 | PUT | `/interviews/:interviewId` | `requireInterviewOwner` (Stage 7C) |
 | GET | `/interviews/job/:jobId` | `requireJobOwner` (Stage 7C) |
@@ -442,6 +447,17 @@ still carry `proposals` are left untouched — no migration.
   which remain in existing documents — are read and displayed as `accepted` and
   `rejected` but are no longer accepted on write. Nothing is migrated or
   backfilled.
+- **Stage 7A** — writing `accepted` also records the employment this hire creates
+  (see §7). It happens *after* the status write has succeeded, so every failure
+  path above — the 400s, the guard's 403 and 404 — leaves the `employments`
+  collection untouched. The response is unchanged, and no request field was added:
+  the record is assembled from the token and the two documents
+  `requireApplicationReviewer` has already loaded. An application already holding
+  `accepted` does not record a second employment, since the statuses are an
+  allow-list rather than a transition matrix. The two writes are not in a
+  transaction, so a process death between them can leave an accepted application
+  with no employment; a failure of the employment write is logged and does not
+  turn a completed hire into a `500`.
 
 ### `DELETE /applications/:applicationId`
 - `404` `{ message: 'Application not found' }`, `403` for a non-applicant, `200`
@@ -496,7 +512,34 @@ still carry `proposals` are left untouched — no migration.
 
 ---
 
-## 7. `/interviews` (Stage 7C)
+## 7. `/employments` (Stage 7A)
+
+An employment is the record created when an employer hires an applicant. The
+resource has **no create endpoint**: an employment exists only as a consequence of
+a hire, which is `PUT /applications/:id/status` with `accepted` (see §5). A client
+cannot post one, choose `employerId`/`employeeId`, or set `endDate`.
+
+### `GET /employments/employee/:uid`
+- `200` `{ employments: [ { id, ...document } ] }`, each entry the stored document
+  with the document id added and no field renamed, dropped or reshaped.
+- `403` `{ message: 'Forbidden' }` when `:uid` is not the caller — `requireSelfParam`.
+- `401` plain text without a token.
+- Empty list rather than `404` when the caller holds no employments.
+
+### `GET /employments/employer/:uid`
+- `200` `{ employments: [ ... ] }`, same shape and same `403`/`401`/empty-list rules.
+
+### Authorization on both reads
+- `requireSelfParam('uid')` compares the path parameter against the verified
+  token, so neither an employee nor an employer can read the other's employments.
+  The service performs no ownership check of its own — the same arrangement as the
+  applications and tasks reads.
+- The guard tests identity, not role: a caller may read either path for their own
+  uid and simply gets an empty list if they are not party to any employment.
+
+---
+
+## 8. `/interviews` (Stage 7C)
 
 An interview belongs to an application: it records that the employer who posted the
 job has arranged to speak to the applicant. It is **not** a new application state —
@@ -582,7 +625,7 @@ interviews/{autoId}
 
 ---
 
-## 8. Cross-cutting defects
+## 9. Cross-cutting defects
 
 Resolved by Stage 1 are struck through; the remainder are scheduled for
 Stages 2-7.
@@ -621,7 +664,7 @@ Stages 2-7.
 
 ---
 
-## 9. Firestore schema as actually stored
+## 10. Firestore schema as actually stored
 
 ```
 users/{uid}
@@ -655,6 +698,16 @@ applications/{autoId}
 tasks/{autoId}
   jobId, employeeId, taskName, taskDescription,
   dueDate, createdDate (Timestamp since Stage 5H)
+
+employments/{autoId}
+  employerId (= token uid), employeeId, jobId, applicationId,
+  startDate, endDate (null), status ('active')
+  # Stage 7A: written only by a successful hire, never by a request body.
+  # startDate is the job's own jobStartDate stored verbatim — required by
+  # jobService, so every API-written job has one — or, for a job document that
+  # lacks it, a serverTimestamp() Timestamp, so the field has two possible
+  # stored types. endDate is null and status is 'active'; nothing writes
+  # 'ended' yet, and there is no update path for this collection.
 
 interviews/{autoId}
   applicationId, jobId, employerId (= token uid),
