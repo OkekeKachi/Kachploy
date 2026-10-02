@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { auth } from '../firebase';
-import axios from 'axios';
+import api from '../api';
 import { MapPin, Briefcase, DollarSign, Clock, CheckCircle, AlertCircle, Building, Users, Calendar, Star, Send } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import EmployerNavbar from '../components/EmployerNavbar';
@@ -17,15 +17,43 @@ const JobDetails = () => {
     const [loading, setLoading] = useState(true);
     const [applying, setApplying] = useState(false);
     const [error, setError] = useState('');
+    const [applicantCount, setApplicantCount] = useState(0);
+
+    // STAGE 5D: `negotiable` is the canonical field on the job document and is
+    // the string "yes"/"no", not a boolean. It must be compared against "yes"
+    // explicitly -- `job.negotiable` on its own is truthy for "no" as well. This
+    // one derived flag replaces four separate checks that used to read
+    // `job.isNegotiable`, a field no write path has ever persisted, so all four
+    // were always falsy and the proposed-price UI never appeared.
+    const isNegotiable = job?.negotiable === 'yes';
 
     useEffect(() => {
         const fetchJobAndUser = async () => {
-            const res = await axios.get(`http://localhost:3000/jobs/${jobId}`);
-            const dbUser = await axios.get(`http://localhost:3000/users/getUser/${auth.currentUser.uid}`);
+            const res = await api.get(`/jobs/${jobId}`);
+            const dbUser = await api.get(`/users/getUser/${auth.currentUser.uid}`);
             setJob(res.data.job);
             setUser(dbUser.data.user);
         };
         fetchJobAndUser();
+
+        // STAGE 5E: this page used to render `{job.proposal} applicants`, reading
+        // a counter that POST /jobs/create wrote as a hardcoded 0 and that no
+        // code ever incremented, so it always read "0 applicants". The counter is
+        // gone. The applicant count is derived per job from the applications
+        // collection, and this is the same single read the dashboards already
+        // make -- one request here, not one per job. Nothing is persisted.
+        const fetchApplicantCount = async () => {
+            try {
+                const countsRes = await api.get('/applications/counts');
+                setApplicantCount((countsRes.data.counts || {})[jobId] || 0);
+            } catch (err) {
+                // A count failure must not break the page: it falls back to 0,
+                // which is what the dashboards do too.
+                console.error('Error fetching application counts', err);
+                setApplicantCount(0);
+            }
+        };
+        fetchApplicantCount();
 
         console.log(auth.currentUser.uid);
         console.log(user);
@@ -44,12 +72,12 @@ const JobDetails = () => {
             return;
         }
 
-        if (job.isNegotiable && !employeePrice) {
+        if (isNegotiable && !employeePrice) {
             setError('Please enter your proposed price for this negotiable job.');
             return;
         }
 
-        if (job.isNegotiable && Number(employeePrice) <= 0) {
+        if (isNegotiable && Number(employeePrice) <= 0) {
             setError('Please enter a valid price amount.');
             return;
         }
@@ -61,14 +89,15 @@ const JobDetails = () => {
             // Simulate API call
             await new Promise(resolve => setTimeout(resolve, 2000));
 
-            await axios.post('http://localhost:3000/applications/apply', {
+            await api.post('/applications/apply', {
                 jobId,
-                proposal: job.proposals,
                 employeeId: auth.currentUser.uid,
                 fullName: user.fullName || 'Anonymous',
                 message,
-                employeePrice: job.isNegotiable ? employeePrice : null,  // Only send employeePrice if negotiable
-                status: "pending"
+                employeePrice: isNegotiable ? employeePrice : null,  // Only send employeePrice if negotiable
+                // Stage 5G: `status` is no longer sent. The server owns it and
+                // always stores `pending`; the value used to be discarded here
+                // anyway, so sending it only implied a write that never happened.
             });
 
             setApplied(true);
@@ -148,7 +177,7 @@ const JobDetails = () => {
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <Users className="w-6 h-6" />
-                                            <span>{job.proposal} applicants</span>
+                                            <span>{applicantCount} applicant{applicantCount !== 1 ? 's' : ''}</span>
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <Star className="w-6 h-6 fill-yellow-400 text-yellow-400" />
@@ -165,7 +194,7 @@ const JobDetails = () => {
                                                 {/* <DollarSign className="w-8 h-8 text-green-400" /> */}
                                                 <span className="text-4xl font-bold text-white"> <span className='text-green-400'>₦</span> {job.price?.toLocaleString()}</span>
                                             </div>
-                                            {job.isNegotiable ? (
+                                            {isNegotiable ? (
                                                 <div className="flex items-center justify-center gap-2 text-green-300">
                                                     <CheckCircle className="w-5 h-5" />
                                                     <span className="font-medium">Negotiable</span>
@@ -298,7 +327,7 @@ const JobDetails = () => {
                                                 )}
 
                                                 <div className="space-y-6">
-                                                    {job.isNegotiable && (
+                                                    {isNegotiable && (
                                                         <div>
                                                             <label className="block text-lg font-bold text-gray-900 mb-3">
                                                                 Your Proposed Price *

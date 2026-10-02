@@ -1,6 +1,40 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import api from '../api';
+
+// STAGE 5H: decodes the two shapes a persisted timestamp can arrive in, and only
+// then formats it.
+//
+// `users.createdAt` is written with FieldValue.serverTimestamp(), and the admin
+// SDK's Timestamp has no toJSON() -- its only own properties are _seconds and
+// _nanoseconds, so res.json() emits {"_seconds":N,"_nanoseconds":M}. This used to
+// be `new Date(clientInfo.createdAt)`, which handed the Date constructor an
+// object, produced Invalid Date, and rendered "Member since Invalid Date" in
+// production while passing in tests (the fake used to hand back an ISO string).
+//
+// An ISO string is still accepted, because documents written before the value
+// was ever a Timestamp keep that shape and nothing here migrates them. Returning
+// null for anything unusable is what lets the caller fall back to "Unknown"
+// instead of printing "Invalid Date".
+const formatPersistedDate = (value) => {
+    let date;
+
+    if (value && typeof value === 'object' && typeof value._seconds === 'number') {
+        date = new Date(value._seconds * 1000);
+    } else if (typeof value === 'string' && value) {
+        date = new Date(value);
+    }
+
+    // Guards a Timestamp-shaped object that is out of range, and any string that
+    // does not parse: both make the Date constructor produce NaN.
+    return date && !Number.isNaN(date.getTime()) ? date : null;
+};
+
+/** "Member since <local date>", or "Member since Unknown" for anything unusable. */
+const formatMemberSince = (createdAt) => {
+    const date = formatPersistedDate(createdAt);
+    return date ? date.toLocaleDateString() : 'Unknown';
+};
 
 const JobSplitView = ({ suggestedJobs }) => {
     const [selectedJob, setSelectedJob] = useState(null);
@@ -44,7 +78,7 @@ const JobSplitView = ({ suggestedJobs }) => {
         if (selectedJob && selectedJob.postedBy) {
             setIsLoadingClient(true);
 
-            axios.get(`http://localhost:3000/users/getUser/${selectedJob.postedBy}`)
+            api.get(`/users/getUser/${selectedJob.postedBy}`)
                 .then(response => {
                     setClientInfo(response.data.user);
                     console.log(response.data.user);
@@ -421,7 +455,7 @@ const JobSplitView = ({ suggestedJobs }) => {
                                             <div className="flex items-center mb-2">
                                                 <i className="material-icons text-base text-gray-600 mr-1">access_time</i>
                                                 <span className="text-gray-600 text-sm">
-                                                    Member since {clientInfo.createdAt ? new Date(clientInfo.createdAt).toLocaleDateString() : 'Unknown'}
+                                                    Member since {formatMemberSince(clientInfo.createdAt)}
                                                 </span>
                                             </div>
 

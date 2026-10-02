@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../firebase'; // Assuming you're using Firebase for authentication
-import axios from 'axios';
+import api from '../api';
 import EmployerDashboard from './EmployerDashboard';  // Make sure to import these components
 import EmployeeDashboard from './EmployeeDashboard';
 
@@ -114,7 +114,7 @@ const RoleBasedDashboard = () => {
 
             try {
                 // Fetch user role from the backend
-                const response = await axios.get(`http://localhost:3000/users/getUser/${user.uid}`);
+                const response = await api.get(`/users/getUser/${user.uid}`);
                 const userRole = response.data.user.role;
 
                 setRole(userRole); // Set the role in the state

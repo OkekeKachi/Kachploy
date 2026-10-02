@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import axios from 'axios';
+import api from '../api';
 import { Briefcase, MapPin, Clock, DollarSign, Calendar, Users, X, Plus, CheckSquare, List, Edit3, ArrowLeft } from 'lucide-react';
 
 // Mock skill suggestions - replace with your actual import
@@ -60,7 +60,7 @@ const EditJobForm = () => {
     useEffect(() => {
         const fetchJobData = async () => {
             try {
-                const response = await axios.get(`http://localhost:3000/jobs/${jobId}`);
+                const response = await api.get(`/jobs/${jobId}`);
                 const job = response.data.job;
 
                 setFormData({
@@ -72,7 +72,12 @@ const EditJobForm = () => {
                     jobStartDate: job.jobStartDate || job.startDate || '',
                     expectedEndDate: job.expectedEndDate || job.endDate || '',
                     price: job.price || '',
-                    negotiable: job.negotiable || (job.isNegotiable ? 'yes' : 'no'),
+                    // STAGE 5D: `negotiable` is canonical. The old
+                    // `|| (job.isNegotiable ? 'yes' : 'no')` fallback is gone --
+                    // no write path ever persisted `isNegotiable`, so it could
+                    // only ever have contributed noise. The `|| 'no'` default is
+                    // kept for a document that predates the field.
+                    negotiable: job.negotiable || 'no',
                     skillsRequired: job.skillsRequired || [],
                     requirements: job.requirements || [],
                     responsibilities: job.responsibilities || [],
@@ -170,7 +175,7 @@ const EditJobForm = () => {
         if (!validateForm()) return;
 
         try {
-            const response = await axios.put(`http://localhost:3000/jobs/edit/${jobId}`, formData);
+            const response = await api.put(`/jobs/edit/${jobId}`, formData);
             if (response.status === 200) {
                 alert('Job updated successfully');
                 navigate('/dashboard');

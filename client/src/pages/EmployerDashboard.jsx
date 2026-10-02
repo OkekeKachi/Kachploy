@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../firebase';
-import axios from 'axios';
+import api from '../api';
 import { Plus, Users, MapPin, Calendar, DollarSign, Edit3, Trash2, Eye, Building2, Search, Filter, TrendingUp, Briefcase } from 'lucide-react';
 import EmployerNavbar from '../components/EmployerNavbar';
 
@@ -27,7 +27,7 @@ const EmployerDashboard = () => {
 
             try {
                 // Fetch user info
-                const res = await axios.get(`http://localhost:3000/users/getUser/${user.uid}`);
+                const res = await api.get(`/users/getUser/${user.uid}`);
                 const userData = res.data.user;
                 setProfilePic(userData.profilePic);
                 setName(userData.fullName);
@@ -39,24 +39,25 @@ const EmployerDashboard = () => {
                 }
 
                 // Fetch posted jobs
-                const jobsRes = await axios.get(`http://localhost:3000/jobs/employer/${user.uid}`);
+                const jobsRes = await api.get(`/jobs/employer/${user.uid}`);
                 const jobList = jobsRes.data.jobs || [];
 
-                // Add applicant count to each job
-                const jobsWithApplicants = await Promise.all(
-                    jobList.map(async (job) => {
-                        try {
-                            const appRes = await axios.get(`http://localhost:3000/applications/job/${job.id}`);
-                            return {
-                                ...job,
-                                applicantCount: appRes.data.applications?.length || 0,
-                            };
-                        } catch (err) {
-                            console.error(`Error fetching applications for job ${job.id}`, err);
-                            return { ...job, applicantCount: 0 };
-                        }
-                    })
-                );
+                // Stage 5B: one count-only read replaces the per-job
+                // GET /applications/job/:jobId fan-out that used to run purely to
+                // read `.length`. Same displayed counts, one request. A failure
+                // degrades to 0 exactly as the old per-job failure path did.
+                let counts = {};
+                try {
+                    const countsRes = await api.get('/applications/counts');
+                    counts = countsRes.data.counts || {};
+                } catch (err) {
+                    console.error('Error fetching application counts', err);
+                }
+
+                const jobsWithApplicants = jobList.map((job) => ({
+                    ...job,
+                    applicantCount: counts[job.id] || 0,
+                }));
 
                 setJobs(jobsWithApplicants);
                 setFilteredJobs(jobsWithApplicants);
@@ -111,7 +112,7 @@ const EmployerDashboard = () => {
     //         jobType: 'Part-time',
     //         createdAt: new Date('2024-01-20'),
     //         price: 200000,
-    //         status: 'paused',
+    //         status: 'filled',
     //         applicantCount: 0,
     //         description: 'Seeking a detail-oriented data analyst to help us make data-driven decisions. Experience with SQL, Python, and data visualization tools preferred.'
     //     }
@@ -139,14 +140,18 @@ const EmployerDashboard = () => {
         }
 
         if (statusFilter !== 'all') {
-            filtered = filtered.filter(job => job.status === statusFilter);
+            // Stage 5G: 'filled' must also match a legacy title-cased 'Filled',
+            // which is what documents created by the old hire flow carry.
+            filtered = filtered.filter(job =>
+                statusFilter === 'filled' ? isJobFilled(job.status) : job.status === statusFilter
+            );
         }
 
         setFilteredJobs(filtered);        
     }, [jobs, searchTerm, statusFilter]);
     const handleDeleteJob = async (jobId) => {
         try {
-            const response = await axios.delete(`http://localhost:3000/jobs/${jobId}`);
+            const response = await api.delete(`/jobs/${jobId}`);
             if (response.status === 200) {
                 const updatedJobs = jobs.filter(job => job.id !== jobId);
                 setJobs(updatedJobs);
@@ -167,9 +172,28 @@ const EmployerDashboard = () => {
         navigate(`/edit-job/${jobId}`)
     };
 
-    const handleViewApplications = (jobId, jobTitle) => {
-        alert(`Viewing applications for: ${jobTitle}`);
-    };
+const handleViewApplications = (jobId, jobTitle) => {
+    // STAGE 6F. This only raised an alert, so "View Apps" was a dead end: the
+    // routed ViewJobApplications page could not be reached from the running app at
+    // all. Navigates to the route that page is already registered on, using the
+    // same `navigate` that handlePostJob and handleEditJob above already use.
+    //
+    // The title is encoded because it is a path segment: job titles contain
+    // spaces and may contain '/', '?' or '#', any of which would otherwise
+    // truncate or break the path. React Router decodes params on the way back
+    // out, so ViewJobApplications' useParams() still receives the exact title,
+    // unchanged from the value this handler has always been handed.
+    navigate(`/employer/jobs/${jobId}/applications/${encodeURIComponent(jobTitle)}`);
+};
+
+    // STAGE 5G. The canonical job statuses are `open`, `filled` and `closed`.
+    // The hire flow used to write the title-cased `Filled`, which none of the
+    // comparisons in this file matched, so a filled job counted as neither open
+    // nor closed and fell through every filter and the badge to the grey default.
+    // `Filled` is what existing documents hold, so it is still read as filled.
+    // `paused` is gone: it was offered as a filter and a badge but had no writer
+    // anywhere in the codebase, and no writer is being added.
+    const isJobFilled = (status) => status === 'filled' || status === 'Filled';
 
     const getStatusBadge = (status) => {
         const baseClasses = "px-3 py-1 rounded-full text-xs font-semibold";
@@ -178,11 +202,23 @@ const EmployerDashboard = () => {
                 return `${baseClasses} bg-green-100 text-green-800`;
             case 'closed':
                 return `${baseClasses} bg-red-100 text-red-800`;
-            case 'paused':
-                return `${baseClasses} bg-yellow-100 text-yellow-800`;
+            case 'filled':
+            case 'Filled':
+                return `${baseClasses} bg-blue-100 text-blue-800`;
             default:
                 return `${baseClasses} bg-gray-100 text-gray-800`;
         }
+    };
+
+    const JOB_STATUS_LABEL = {
+        open: 'Open',
+        filled: 'Filled',
+        closed: 'Closed',
+    };
+
+    const jobStatusLabel = (status) => {
+        if (isJobFilled(status)) return JOB_STATUS_LABEL.filled;
+        return JOB_STATUS_LABEL[status] || status;
     };
 
     const totalJobs = jobs.length;
@@ -320,8 +356,8 @@ const EmployerDashboard = () => {
                             >
                                 <option value="all">All Status</option>
                                 <option value="open">Open</option>
+                                <option value="filled">Filled</option>
                                 <option value="closed">Closed</option>
-                                <option value="paused">Paused</option>
                             </select>
                         </div>
                     </div>
@@ -364,9 +400,14 @@ const EmployerDashboard = () => {
                                         <div className="flex-1">
                                             <div className="flex items-start justify-between mb-3">
                                                 <h3 className="text-xl font-bold text-gray-900 mb-2">{job.title}</h3>
-                                                <span className={getStatusBadge(job.status)}>
-                                                    {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
-                                                </span>
+                            <span className={getStatusBadge(job.status)}>
+                                {/* Stage 5G: was
+                                    `job.status.charAt(0).toUpperCase() + job.status.slice(1)`,
+                                    which capitalised whatever was stored and threw on a
+                                    missing status. Legacy 'Filled' and canonical
+                                    'filled' now render the same word. */}
+                                {jobStatusLabel(job.status)}
+                            </span>
                                             </div>
 
                                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
@@ -420,6 +461,11 @@ const EmployerDashboard = () => {
                                                 <span>Delete</span>
                                             </button>
 
+                                            {/* Stage 5G: a filled job used to land in the
+                                                else-branch and render as a disabled button
+                                                labelled "Closed", which is a different state. It
+                                                now reads "Filled". The dead `paused` state is
+                                                gone. */}
                                             {job.status === 'open' ? (
                                                 <button
                                                     onClick={() => handleViewApplications(job.id, job.title)}
@@ -427,6 +473,14 @@ const EmployerDashboard = () => {
                                                 >
                                                     <Eye className="w-4 h-4" />
                                                     <span>View Apps</span>
+                                                </button>
+                                            ) : isJobFilled(job.status) ? (
+                                                <button
+                                                    disabled
+                                                    className="flex-1 lg:flex-none w-full flex items-center justify-center space-x-2 px-4 py-2 bg-blue-50 text-blue-400 rounded-lg font-medium cursor-not-allowed"
+                                                >
+                                                    <Eye className="w-4 h-4" />
+                                                    <span>Filled</span>
                                                 </button>
                                             ) : (
                                                 <button

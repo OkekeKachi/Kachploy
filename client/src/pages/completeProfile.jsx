@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { auth } from '../firebase';
-import axios from 'axios';
+import api from '../api';
 import { useNavigate } from 'react-router-dom';
 import { storage } from '../firebase';
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -24,7 +24,7 @@ const CompleteProfile = () => {
             }
 
             try {
-                const response = await axios.get(`http://localhost:3000/users/getUser/${user.uid}`);
+                const response = await api.get(`/users/getUser/${user.uid}`);
                 setRole(response.data.user.role);
 
                 // Get data from both Auth and Firestore
@@ -99,7 +99,7 @@ const CompleteProfile = () => {
                 payload.skills = formattedSkills;
             }
 
-            await axios.put(`http://localhost:3000/users/update/${user.uid}`, payload);
+            await api.put(`/users/update/${user.uid}`, payload);
             alert('Profile completed successfully!');
             navigate('/dashboard');
         } catch (err) {

@@ -1,8 +1,8 @@
 var express = require('express');
 var router = express.Router();
-const { admin, db } = require("../config/firebase");
+const { protect } = require('../middleware/auth');
 
-router.get('/', function (req, res, next) {
+router.get('/', protect, function (req, res, next) {
     res.send('respond with a resource');
 });
 

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { auth } from '../firebase';
 import { sendEmailVerification, onAuthStateChanged, reload } from 'firebase/auth';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import api from '../api';
 
 const VerifyEmail = () => {
     const [user, setUser] = useState(null);
@@ -27,18 +27,28 @@ const VerifyEmail = () => {
                 if (auth.currentUser.emailVerified) {
                     const data = JSON.parse(localStorage.getItem('register_user'));
                     console.log(data);
-                    // if (!data) return;
-                    if (!data) { navigate("/login") };
+                    // STAGE 5I-2: this branch used to navigate and then fall
+                    // through, because the `return` was missing -- a commented-out
+                    // `if (!data) return;` sat above it, so the intent was recorded
+                    // but never executed. `data` is null at this point, so falling
+                    // through threw a TypeError on `data.fullName` inside the try
+                    // below; the inner catch swallowed it to the console, so the
+                    // registration was silently never sent and the account was left
+                    // in Auth with no users/{uid} document. Returning here exits the
+                    // interval callback, so neither the dereference nor the POST can
+                    // run without the staged data.
+                    if (!data) {
+                        navigate("/login");
+                        return;
+                    }
                     try {
-                        await axios.post('http://localhost:3000/users/register', {
+                        // The shared instance attaches the caller's ID token,
+                        // so no manual Authorization header is needed here.
+                        await api.post('/users/register', {
                             fullName: data.fullName,
                             phone: data.phone,
                             role: data.role,
                             profileComplete: data.profileComplete
-                        }, {
-                            headers: {
-                                Authorization: `Bearer ${data.token}`,
-                            },
                         });
                         console.log("✅ User registered to backend");
                         navigate('/dashboard');

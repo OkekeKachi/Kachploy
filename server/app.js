@@ -11,6 +11,9 @@ var usersRouter = require('./routes/users');
 var jobsRouter = require('./routes/jobs');
 var applicationsRouter = require('./routes/applications');
 var tasksRouter = require('./routes/tasks');
+// STAGE 7C: the interviews resource. The create and update routes are
+// employer-only; reads are open to either party to the application.
+var interviewsRouter = require('./routes/interviews');
 
 
 var app = express();
@@ -31,6 +34,7 @@ app.use('/users', usersRouter);
 app.use('/applications', applicationsRouter);
 app.use('/jobs', jobsRouter);
 app.use('/tasks', tasksRouter);
+app.use('/interviews', interviewsRouter);
 
 // catch 404 and forward to error handler
 app.use(function(req, res, next) {

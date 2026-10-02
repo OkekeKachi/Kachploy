@@ -24,6 +24,11 @@ const SignUp = ({ setisSignup }) => {
 
     const handleSignUp = async (e) => {
         e.preventDefault();
+        // STAGE 5I-4: set once `register_user` is durably stored. The catch needs
+        // it to tell "no account was ever created" apart from "the account exists
+        // but the email did not send" -- only the second case may continue to the
+        // verification page.
+        let stagedInStorage = false;
         try {
             const { email, password, fullName, phone, role, profileComplete } = formData;
 
@@ -35,12 +40,15 @@ const SignUp = ({ setisSignup }) => {
             const userCredential = await createUserWithEmailAndPassword(auth, email, password);
             const user = userCredential.user;
 
-            await sendEmailVerification(user, {
-                url: 'http://localhost:5173/verify-email',
-            });
-
-            alert("✅ Verification email sent. Please check your inbox.");
-
+            // STAGE 5I-4: this used to run AFTER sendEmailVerification. A failed
+            // email send therefore threw before the profile was ever stored, so
+            // fullName / phone / role / profileComplete were lost permanently: the
+            // Auth account existed but nothing could ever reconstruct
+            // POST /users/register from it, and re-submitting the form failed with
+            // email-already-in-use. Storing first means a temporary email failure
+            // loses nothing -- the data is already here when the user resends.
+            // The stored shape is unchanged, so VerifyEmail.jsx reads it exactly
+            // as before.
             localStorage.setItem("register_user", JSON.stringify({
                 token: await user.getIdToken(),
                 fullName,
@@ -48,9 +56,30 @@ const SignUp = ({ setisSignup }) => {
                 role,
                 profileComplete,
             }));
+            stagedInStorage = true;
+
+            await sendEmailVerification(user, {
+                url: 'http://localhost:5173/verify-email',
+            });
+
+            alert("✅ Verification email sent. Please check your inbox.");
 
             navigate('/verify-email');
         } catch (err) {
+            // STAGE 5I-4: staging already succeeded, so the Auth account exists and
+            // the profile data is safe. Re-submitting this form would fail with
+            // email-already-in-use, so the message says what happened and the
+            // verification page -- whose existing Resend button completes the flow
+            // -- is where the user continues. The happy path's alert and navigation
+            // are untouched, and a failure before staging still uses the original
+            // single-line alert and stays on this form. The Auth account is
+            // deliberately NOT deleted here.
+            if (stagedInStorage) {
+                alert(`❌ ${err.message}\n\nYour account was created and your details were saved, but the verification email could not be sent. Taking you to the verification page -- press Resend there to try again.`);
+                navigate('/verify-email');
+                return;
+            }
+
             alert(`❌ ${err.message}`);
         }
     };

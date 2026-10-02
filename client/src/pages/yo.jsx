@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { auth } from '../firebase';
-import axios from 'axios';
+import api from '../api';
 
 const EmployerDashboard = () => {
     const [profilePic, setProfilePic] = useState(null);
@@ -19,7 +19,7 @@ const EmployerDashboard = () => {
 
             try {
                 // Fetch user info
-                const res = await axios.get(`http://localhost:3000/users/getUser/${user.uid}`);
+                const res = await api.get(`/users/getUser/${user.uid}`);
                 const userData = res.data.user;
                 setProfilePic(userData.profilePic);
                 setName(userData.fullName);
@@ -30,24 +30,25 @@ const EmployerDashboard = () => {
                 }
 
                 // Fetch posted jobs
-                const jobsRes = await axios.get(`http://localhost:3000/jobs/employer/${user.uid}`);
+                const jobsRes = await api.get(`/jobs/employer/${user.uid}`);
                 const jobList = jobsRes.data.jobs || [];
 
-                // Add applicant count to each job
-                const jobsWithApplicants = await Promise.all(
-                    jobList.map(async (job) => {
-                        try {
-                            const appRes = await axios.get(`http://localhost:3000/applications/job/${job.id}`);
-                            return {
-                                ...job,
-                                applicantCount: appRes.data.applications?.length || 0,
-                            };
-                        } catch (err) {
-                            console.error(`Error fetching applications for job ${job.id}`, err);
-                            return { ...job, applicantCount: 0 };
-                        }
-                    })
-                );
+                // Stage 5B: one count-only read replaces the per-job
+                // GET /applications/job/:jobId fan-out that used to run purely to
+                // read `.length`. Same displayed counts, one request. A failure
+                // degrades to 0 exactly as the old per-job failure path did.
+                let counts = {};
+                try {
+                    const countsRes = await api.get('/applications/counts');
+                    counts = countsRes.data.counts || {};
+                } catch (err) {
+                    console.error('Error fetching application counts', err);
+                }
+
+                const jobsWithApplicants = jobList.map((job) => ({
+                    ...job,
+                    applicantCount: counts[job.id] || 0,
+                }));
 
                 setJobs(jobsWithApplicants);
             } catch (err) {
@@ -60,7 +61,7 @@ const EmployerDashboard = () => {
 
     const handleDeleteJob = async (jobId) => {
         try {
-            const response = await axios.delete(`http://localhost:3000/jobs/${jobId}`);
+            const response = await api.delete(`/jobs/${jobId}`);
             if (response.status === 200) {
                 setJobs(jobs.filter((job) => job.id !== jobId));
             } else {

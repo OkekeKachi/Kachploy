@@ -1,20 +1,27 @@
 
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { auth } from '../firebase'; // Adjust path if needed
-import axios from 'axios';
+import api from '../api';
 import JobSplitView from '../components/JobSplitView';
 import ProfileSidebar from '../components/profileSideBar';
-import { ChevronDown, Search, Menu, X } from 'lucide-react';
+import { Search } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import EmployerNavbar from '../components/EmployerNavbar';
 const EmployeeDashboard = () => {
-    const [isProfileComplete, setIsProfileComplete] = useState(true);
+    // Stage 6R: isProfileComplete, isMobileMenuOpen and isDropdownOpen are gone.
+    // All three were write-only state -- their setters were called, but the values
+    // were never read anywhere, including the JSX, so none of them could influence
+    // what this component renders. They are residue from when this page owned its
+    // own navbar, profile dropdown and mobile menu, all of which were replaced by
+    // the <EmployerNavbar/> this page now renders.
+    //
+    // The profile-completion redirect in the effect below does NOT depend on this
+    // state: it tests the local profileStatus read straight from the API response.
+    // That redirect is therefore unaffected and is preserved exactly as it was.
     const [jobs, setJobs] = useState([]);
     const [user, setUser] = useState({});
     const [applications, setApplications] = useState([]);
-    const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [activeSlide, setActiveSlide] = useState(0);
     const navigate = useNavigate();
 
@@ -22,7 +29,7 @@ const EmployeeDashboard = () => {
         // Fetch user profile status
         const fetchProfileStatus = async () => {
             const currentUser = auth.currentUser;
-            console.log(currentUser);
+            
 
             if (!currentUser) {
                 navigate('/login');
@@ -33,38 +40,47 @@ const EmployeeDashboard = () => {
                 console.log(currentUser);
                 
                 const [userRes, jobsRes, appsRes] = await Promise.all([
-                    axios.get(`http://localhost:3000/users/getUser/${currentUser.uid}`),
-                    axios.get('http://localhost:3000/jobs'),
-                    axios.get(`http://localhost:3000/applications/employee/${currentUser.uid}`)
+                    api.get(`/users/getUser/${currentUser.uid}`),
+                    api.get('/jobs'),
+                    api.get(`/applications/employee/${currentUser.uid}`)
                 ]);
 
                 setUser(userRes.data.user);
                 const jobList = jobsRes.data.jobs || [];
-                const jobsWithApplicants = await Promise.all(
-                    jobList.map(async (job) => {
-                        try {
-                            const appRes = await axios.get(`http://localhost:3000/applications/job/${job.id}`);
-                            return {
-                                ...job,
-                                applicantCount: appRes.data.applications?.length || 0,
-                            };
-                        } catch (err) {
-                            console.error(`Error fetching applications for job ${job.id}`, err);
-                            return { ...job, applicantCount: 0 };
-                        }
-                    })
-                );
+
+                // Stage 5B: one count-only read replaces the per-job
+                // GET /applications/job/:jobId fan-out that used to run purely to
+                // read `.length`, which returned every applicant's details to this
+                // employee-facing page. A failure here degrades to 0, exactly as the
+                // old per-job failure path did, and deliberately does not fall
+                // through to the profile-complete redirect below.
+                let counts = {};
+                try {
+                    const countsRes = await api.get('/applications/counts');
+                    counts = countsRes.data.counts || {};
+                } catch (err) {
+                    console.error('Error fetching application counts', err);
+                }
+
+                const jobsWithApplicants = jobList.map((job) => ({
+                    ...job,
+                    applicantCount: counts[job.id] || 0,
+                }));
+
                 setJobs(jobsWithApplicants);
                 setApplications(appsRes.data.applications || []);
 
+                // Stage 6R: this redirect is byte-for-byte unchanged and still driven
+                // entirely by profileStatus from the API response. Only the trailing
+                // setIsProfileComplete write was removed; the state it fed was never
+                // read, so no rendered output can differ. The catch likewise still
+                // only logs -- it never navigated, and now needs no setter.
                 const profileStatus = userRes.data.user.profileComplete;
                 if (!profileStatus) {
                     navigate('/complete-profile');
                 }
-                setIsProfileComplete(profileStatus);
             } catch (error) {
                 console.error('Error fetching profile status:', error);
-                setIsProfileComplete(false);
             }
         };
 
@@ -78,30 +94,30 @@ const EmployeeDashboard = () => {
         return () => clearInterval(interval);
     }, [navigate]);
 
-    const applyToJob = (jobId) => {
-        navigate(`/jobs/${jobId}`);
-    };
-
-    const handleLogout = async () => {
-        try {
-            await auth.signOut();
-            navigate('/login');
-        } catch (error) {
-            console.error('Logout error:', error);
-        }
-    };
-
-    const toggleMobileMenu = () => {
-        setIsMobileMenuOpen(prev => !prev);
-    };
-
-    const toggleDropdown = () => {
-        setIsDropdownOpen(prev => !prev);
-    };
+    // Stage 6R: applyToJob, handleLogout, toggleMobileMenu and toggleDropdown are
+    // all removed. Each was defined and never referenced -- no JSX in this component
+    // binds any of them, and the only elements that receive props are
+    // <JobSplitView suggestedJobs={...} /> and <ProfileSidebar user={user} />, neither
+    // of which is passed a callback. So all four were unreachable.
+    //
+    // handleLogout in particular was already correct code: it awaited auth.signOut()
+    // before navigating, and did not navigate at all if sign-out failed. It was simply
+    // never wired to anything. Sign-out for this page is owned by EmployerNavbar's
+    // handleSignOut, which is wired to the "Sign out" button in that navbar's profile
+    // dropdown, so removing this copy cannot affect whether an employee can log out.
+    //
+    // The lucide ChevronDown, Menu and X icons were removed alongside them, as they
+    // existed only for the dropdown and mobile-menu UI this component no longer
+    // renders, along with Link from react-router-dom. The auth import stays: it is
+    // still read for auth.currentUser at the top of the effect.
 
     const filteredJobs = jobs.filter(job => {
         const hasApplied = applications.some(app => app.jobId === job.id);
-        const isFilled = job.status === 'Filled';
+        // Stage 5G: was `job.status === 'Filled'` against the title-cased value
+        // the old hire flow wrote. The canonical spelling is lowercase 'filled';
+        // documents that already hold 'Filled' are still recognised so a filled
+        // job does not reappear in suggestions.
+        const isFilled = job.status === 'filled' || job.status === 'Filled';
         const currentDate = new Date();
         const applicationDeadline = new Date(job.applicationDeadline);
         const isDeadlinePassed = applicationDeadline < currentDate;

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { auth } from '../firebase';
-import axios from 'axios';
+import api from '../api';
 import { useNavigate } from 'react-router-dom';
 import EmployerNavbar from '../components/EmployerNavbar';
 import { Briefcase, MapPin, Clock, DollarSign, Calendar, Users, X, Plus, CheckSquare, List } from 'lucide-react';
@@ -63,7 +63,7 @@ const PostJobForm = () => {
                 const authUser = auth.currentUser;
                 if (authUser) {
                     console.log('Fetching user data for:', authUser.uid);
-                    const res = await axios.get(`http://localhost:3000/users/getUser/${authUser.uid}`);
+                    const res = await api.get(`/users/getUser/${authUser.uid}`);
                     const userData = res.data.user;
                     setUser(userData);
                 } else {
@@ -175,7 +175,7 @@ const PostJobForm = () => {
         if (!validateForm()) return;
 
         try {
-            await axios.post('http://localhost:3000/jobs/create', {
+            await api.post('/jobs/create', {
                 ...formData,
                 postedBy: authUser.uid,
             });

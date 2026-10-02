@@ -3,7 +3,7 @@ import { auth } from '../firebase';
 import { useNavigate } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import axios from 'axios';
+import api from '../api';
 const Dashboard = () => {
     const [userData, setUserData] = useState(null);
     const navigate = useNavigate();
@@ -12,14 +12,9 @@ const Dashboard = () => {
         const fetchUserData = async () => {
             const currentUser = auth.currentUser;
             if (!currentUser) return navigate('/login');
-            const token = await currentUser.getIdToken();
 
             try {
-                const res = await axios.get('http://localhost:3000/users/profile', {
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                    },
-                });
+                const res = await api.get('/users/profile');
 
                 setUserData(res.data);
             } catch (err) {
