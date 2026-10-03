@@ -15,6 +15,19 @@ import InterviewPanel from '../components/InterviewPanel';
 const ACCEPTED = 'accepted';
 const REJECTED = 'rejected';
 
+// STAGE 7G-2: the lifecycle the server now enforces.
+//   pending      applied, not yet cleared for hiring
+//   interviewed  cleared for hiring; the employer may now hire
+//   accepted     hired
+//   rejected     not hired
+//
+// `interviewed` is written by the explicit "Clear for hiring" action below and by
+// nothing else. In particular it is NOT set when an interview is marked completed:
+// that dropdown belongs to the interview domain, and Stage 7C established that the
+// two domains do not write to each other in either direction.
+const PENDING = 'pending';
+const INTERVIEWED = 'interviewed';
+
 // Legacy stored values, mapped onto the canonical pair for display. Anything
 // unrecognised is passed through unchanged so a hand-written value is still
 // visible rather than silently rewritten.
@@ -27,8 +40,14 @@ const canonicalAppStatus = (status) => {
 // What the user sees. The canonical label for `accepted` is "Employed", which is
 // the wording this page and the employee-facing page have always used, so the
 // legacy documents display identically to the new ones.
+// STAGE 7G-2: `interviewed` is labelled with the action it enables rather than
+// with the interview that precedes it. "Cleared for hiring" is the phrase the
+// button below uses, so the status line and the button an employer is being invited
+// to press say the same thing. `Pending` is listed as a computed key so it stays
+// tied to the PENDING constant above.
 const APP_STATUS_LABEL = {
-    pending: 'Pending',
+    [PENDING]: 'Pending',
+    [INTERVIEWED]: 'Cleared for hiring',
     [ACCEPTED]: 'Employed',
     [REJECTED]: 'Not Hired',
 };
@@ -52,6 +71,80 @@ const appliedOnLabel = (dateApplied) => {
     return date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : 'Date not available';
 };
 
+/**
+ * STAGE 7G-2: the applicant's decision controls, as three mutually exclusive states.
+ *
+ * The server refuses `accepted` unless the application is `interviewed`, so an
+ * enabled Hire button on a pending applicant offered an action guaranteed to fail.
+ * The Hire button is still rendered in that case: an employer looking at a pending
+ * applicant can see that hiring is a step that exists and is not yet available,
+ * rather than wondering whether the page is broken.
+ *
+ * `isHiring` disables this card's own button while its hire runs. `isClearing` is
+ * also honoured here because clearing and hiring are two writes to the same
+ * application document, and letting an employer start one while the other is in
+ * flight would race two statuses onto one application.
+ */
+const ApplicantDecisionButtons = ({ application, isHiring, isClearing, onHire, onClear }) => {
+    const appStatus = canonicalAppStatus(application.status);
+
+    // Unchanged Stage 5I behaviour: a hired applicant reads "Hired" and is offered
+    // nothing further.
+    if (appStatus === ACCEPTED) {
+        return (
+            <button type="button" style={{ marginTop: '10px' }} disabled>
+                Hired
+            </button>
+        );
+    }
+
+    const canHire = appStatus === INTERVIEWED;
+
+    // STAGE 7G-2 follow-up: `rejected` is clearable as well as `pending`. Rejection is
+    // not a dead end -- an employer who rejects an applicant by some other route, or
+    // who changes their mind, can bring them back to `interviewed` and hire them from
+    // there. This does NOT let a rejected applicant be hired directly: `canHire` above
+    // is unchanged, so `rejected` still renders a disabled Hire button and still has
+    // to pass through the clear action first, which is the only thing on this page
+    // that writes `interviewed`.
+    //
+    // The button and the hint below are both driven off this one flag on purpose.
+    // Spelling the status out in both places is how they drifted apart once already,
+    // leaving rejected applicants with no way back and a hint that said hiring was
+    // simply unavailable.
+    const canClearForHiring = appStatus === PENDING || appStatus === REJECTED;
+
+    return (
+        <>
+            {canClearForHiring && (
+                <button
+                    type="button"
+                    onClick={() => onClear(application)}
+                    style={{ marginTop: '10px', marginRight: '8px' }}
+                    disabled={isClearing || isHiring}
+                >
+                    {isClearing ? 'Clearing...' : 'Clear for hiring'}
+                </button>
+            )}
+            <button
+                type="button"
+                onClick={() => onHire(application)}
+                style={{ marginTop: '10px' }}
+                disabled={isHiring || isClearing || !canHire}
+            >
+                Hire
+            </button>
+            {!canHire && (
+                <p style={{ margin: '6px 0 0', color: '#6b7280' }}>
+                    {canClearForHiring
+                        ? 'Hire becomes available once this applicant is cleared for hiring.'
+                        : 'Hire is not available for this applicant.'}
+                </p>
+            )}
+        </>
+    );
+};
+
 const ViewJobApplications = () => {
     const { jobId, jobTitle } = useParams();
     const [applications, setApplications] = useState([]);
@@ -66,6 +159,15 @@ const ViewJobApplications = () => {
     // reach POST /tasks. This ref is checked and set synchronously, before the
     // first await, so the second click returns immediately.
     const hiringInFlightRef = useRef(false);
+
+    // STAGE 7G-2: the same guard for the "Clear for hiring" action, for the same
+    // reason. `isClearing` alone cannot stop a double click, because two clicks in
+    // one tick both read the pre-update render; the ref is checked and set
+    // synchronously before the first await. Separate from `hiringInFlightRef` so the
+    // two actions cannot suppress each other, and both are cleared in `finally` so
+    // neither a failed action nor a failed refresh can leave a button stuck.
+    const clearingInFlightRef = useRef(false);
+    const [isClearing, setIsClearing] = useState(false);
 
     // STAGE 7E: the employer-side interview section.
     //
@@ -134,6 +236,54 @@ const ViewJobApplications = () => {
         fetchApplications();
         fetchInterviews();
     }, [fetchApplications, fetchInterviews]);
+
+    /**
+     * STAGE 7G-2: clears a pending applicant for hiring.
+     *
+     * One PUT of `interviewed`, then a refresh. This is the ONLY thing on this page
+     * that writes `interviewed`, and it is deliberately a separate, explicit action
+     * rather than a side effect of anything else:
+     *
+     *   * Not of marking an interview completed. The interview status dropdown in
+     *     InterviewPanel is the interview domain's business, and Stage 7C fixed the
+     *     rule that the two domains do not write to each other. An employer who
+     *     marks an interview `completed` still has to clear the applicant here.
+     *   * Not of the hire. `changeStatus` below is unchanged and still performs its
+     *     three calls; it simply now starts from `interviewed` instead of `pending`.
+     *
+     * The list is refetched rather than patched in place, because the server is the
+     * authority on the status and a stale card would offer a Hire button the server
+     * would refuse. `fetchApplications` returns a boolean rather than throwing, so a
+     * failed refresh cannot be mistaken for a failed clear.
+     *
+     * The same page-level error is used as the hire's, since it is the same failure
+     * surface for the employer: `err.message` is the server's text, which for this
+     * endpoint includes the gate's message when the applicant is not in a state that
+     * can be cleared.
+     */
+    const clearForHiring = async (applicant) => {
+        if (clearingInFlightRef.current) return;
+        clearingInFlightRef.current = true;
+        setIsClearing(true);
+        setError('');
+
+        try {
+            await api.put(`/applications/${applicant.id}/status`, {
+                status: INTERVIEWED,
+            });
+
+            await fetchApplications();
+        } catch (err) {
+            console.error('Error clearing application for hiring:', err);
+
+            setError(
+                `This applicant could not be cleared for hiring: ${err.message || 'the request failed'}.`
+            );
+        } finally {
+            clearingInFlightRef.current = false;
+            setIsClearing(false);
+        }
+    };
 
     const changeStatus = async (hiredApplicant) => {
         // STAGE 5I-1: the synchronous guard, before any await, so two clicks in
@@ -252,13 +402,14 @@ const ViewJobApplications = () => {
                             )}
                             {/* Stage 5H: was an unguarded `app.dateApplied._seconds`. */}
                             <p><strong>Applied on:</strong> {appliedOnLabel(app.dateApplied)}</p>
-                            <button
-                                onClick={() => changeStatus(app)}
-                                style={{ marginTop: '10px' }}
-                                disabled={isHiring || canonicalAppStatus(app.status) === ACCEPTED}
-                            >
-                                {canonicalAppStatus(app.status) === ACCEPTED ? 'Hired' : 'Hire'}
-                            </button>
+                            {/* STAGE 7G-2: see ApplicantDecisionButtons above. */}
+                            <ApplicantDecisionButtons
+                                application={app}
+                                isHiring={isHiring}
+                                isClearing={isClearing}
+                                onHire={changeStatus}
+                                onClear={clearForHiring}
+                            />
                             {/* STAGE 7E. Deliberately placed after the hire button and
                                 independent of it: an interview is not a hire. This
                                 writes no application status, changes nothing on

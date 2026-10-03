@@ -199,6 +199,12 @@ test('an interview is accepted for an application whose status is not pending', 
   // There is no interview-related application status in this stage, so an interview
   // for an already-accepted (hired) application is a legitimate record rather than a
   // contradiction. Nothing here consults the application status at all.
+  //
+  // STAGE 7G-1 added the `interviewed` application status, which is about clearing
+  // an applicant for hiring and is written explicitly by an employer. It does not
+  // make scheduling on a hired application contradictory, and this test is
+  // deliberately unchanged: an interview is still a separate fact about an
+  // application, not a precondition the service enforces when one is created.
   const res = await create();
 
   assert.equal(res.status, 200);
@@ -846,14 +852,19 @@ test('updating an interview does not touch any other collection', async () => {
 });
 
 test('an interview created before the hire survives the hire unchanged', async () => {
-  seedJobWithApplication();
+  // STAGE 7G-1: seeded `interviewed`, because that is the state a hire now starts
+  // from. Nothing else about the test changes -- the point is still that the
+  // interview document is untouched by the hire.
+  seedJobWithApplication({}, { status: 'interviewed' });
   await create();
   const before = interviews()[0];
 
   await employerApi.put('/applications/app-1/status', { body: { status: 'accepted' } });
 
   // The hire creates an employment (Stage 7A) and leaves the interview alone: the
-  // two domains do not write to each other in either direction.
+  // two domains do not write to each other in either direction. STAGE 7G-1 adds a
+  // status value but no coupling: completing an interview still does not touch the
+  // application, and the employer clears the application for hiring explicitly.
   assert.equal(Object.keys(client.readAll('employments')).length, 1);
   assert.deepEqual(interviews()[0], before);
   assert.equal(interviews()[0].status, 'scheduled');

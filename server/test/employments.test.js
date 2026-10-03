@@ -60,6 +60,26 @@ function seedPendingApplication(jobOverrides = {}, applicationOverrides = {}) {
   );
 }
 
+/**
+ * STAGE 7G-1: the same seed, with the application `interviewed` instead.
+ *
+ * This is now the state a hire starts from. `accepted` is refused unless the
+ * application is `interviewed` or already `accepted`, so every test in this file
+ * that expects a hire to succeed seeds through here. `seedPendingApplication` is
+ * kept because the refusal tests still need an application that has NOT been
+ * cleared for hiring -- rejecting, writing pending, an unknown status, a missing
+ * status and every authorization failure all legitimately start from `pending`,
+ * and none of them reaches the gate.
+ */
+function seedInterviewedApplication(jobOverrides = {}, applicationOverrides = {}) {
+  client.seed('jobs', 'job-1', job({ postedBy: 'employer-1', ...jobOverrides }));
+  client.seed(
+    'applications',
+    'app-1',
+    application({ jobId: 'job-1', employeeId: 'employee-1', status: 'interviewed', ...applicationOverrides })
+  );
+}
+
 /** The single hire call under test. */
 const hire = (status = 'accepted', applicationId = 'app-1') =>
   employerApi.put(`/applications/${applicationId}/status`, { body: { status } });
@@ -69,7 +89,7 @@ const hire = (status = 'accepted', applicationId = 'app-1') =>
 // ---------------------------------------------------------------------------
 
 test('accepting an application records an employment for the hired applicant', async () => {
-  seedPendingApplication();
+  seedInterviewedApplication();
 
   const res = await hire();
 
@@ -87,7 +107,7 @@ test('accepting an application records an employment for the hired applicant', a
 });
 
 test('a new employment starts active with no end date', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
 
   await hire();
 
@@ -100,7 +120,7 @@ test('a new employment starts active with no end date', async () => {
 });
 
 test('an employment stores every required field and nothing else', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
 
   await hire();
 
@@ -119,7 +139,7 @@ test('an employment stores every required field and nothing else', async () => {
 });
 
 test('the employment takes its start date from the job', async () => {
-  seedPendingApplication({ jobStartDate: '2026-10-05' });
+seedInterviewedApplication({ jobStartDate: '2026-10-05' });
 
   await hire();
 
@@ -129,7 +149,7 @@ test('the employment takes its start date from the job', async () => {
 });
 
 test('the employment falls back to a server timestamp when the job has no start date', async () => {
-  seedPendingApplication({ jobStartDate: undefined });
+seedInterviewedApplication({ jobStartDate: undefined });
 
   await hire();
 
@@ -146,7 +166,7 @@ test('the employment falls back to a server timestamp when the job has no start 
 });
 
 test('the employment ignores any employment field sent in the request body', async () => {
-  seedPendingApplication();
+  seedInterviewedApplication();
 
   const res = await employerApi.put('/applications/app-1/status', {
     body: {
@@ -195,7 +215,7 @@ test('a pending status records no employment', async () => {
 });
 
 test('accepting an already-accepted application does not record a second employment', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
   assert.equal(employments().length, 1);
 
@@ -217,7 +237,11 @@ test('a rejected status value records no employment', async () => {
   const res = await hire('Employed');
 
   assert.equal(res.status, 400);
-  assert.equal(res.body.message, 'Invalid status. Must be one of: pending, accepted, rejected.');
+  // STAGE 7G-1: the allow-list gained `interviewed`, and this message is generated
+  // from APPLICATION_STATUSES, so the exact string moved. The value under test is
+  // still refused as an unrecognised status, not by the hire gate: `Employed` fails
+  // the allow-list check, which runs first.
+  assert.equal(res.body.message, 'Invalid status. Must be one of: pending, interviewed, accepted, rejected.');
   assert.equal(client.readDoc('applications', 'app-1').status, 'pending');
   assert.deepEqual(employments(), [], 'the validation failure precedes the write');
 });
@@ -285,7 +309,7 @@ test('an unauthenticated hire records no employment', async () => {
 });
 
 test('a hire that is refused still writes the application status it asked for, or nothing at all', async () => {
-  seedPendingApplication();
+  seedInterviewedApplication();
   client.seed(
     'applications',
     'app-2',
@@ -303,11 +327,89 @@ test('a hire that is refused still writes the application status it asked for, o
 });
 
 // ---------------------------------------------------------------------------
-// 3. Each party can read their own employments.
+// 4. STAGE 7G-1: the lifecycle gate and what it does not create.
+// ---------------------------------------------------------------------------
+
+test('clearing an application for hiring records no employment', async () => {
+  seedPendingApplication();
+
+  const res = await hire('interviewed');
+
+  assert.equal(res.status, 200);
+  assert.equal(client.readDoc('applications', 'app-1').status, 'interviewed');
+  // `interviewed` means the applicant may now be hired. It is emphatically not a
+  // hire: an employment is created by `accepted` and by nothing else, so the
+  // intermediate state the gate introduces cannot start an employment early.
+  assert.deepEqual(employments(), []);
+});
+
+test('hiring an application that is not cleared for hiring records no employment', async () => {
+  seedPendingApplication();
+
+  const res = await hire();
+
+  assert.equal(res.status, 400);
+  // The gate refuses before the status write, so the application is untouched...
+  assert.equal(client.readDoc('applications', 'app-1').status, 'pending');
+  // ...and, because the status write is what triggers the employment, no record
+  // exists either. The two assertions are the same fact seen from both sides.
+  assert.deepEqual(employments(), []);
+});
+
+test('clearing for hiring and then hiring records exactly one employment', async () => {
+  seedPendingApplication();
+
+  const cleared = await hire('interviewed');
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(employments(), [], 'the intermediate write creates nothing');
+
+  const hired = await hire();
+  assert.equal(hired.status, 200);
+  assert.equal(client.readDoc('applications', 'app-1').status, 'accepted');
+
+  assert.equal(employments().length, 1);
+  assert.equal(employments()[0].applicationId, 'app-1');
+});
+
+test('a refused premature hire can be corrected by clearing for hiring and retrying', async () => {
+  seedPendingApplication();
+
+  const premature = await hire();
+  assert.equal(premature.status, 400);
+
+  const cleared = await hire('interviewed');
+  assert.equal(cleared.status, 200);
+
+  const retried = await hire();
+  assert.equal(retried.status, 200);
+
+  // The gate is a precondition, not a terminal state: an employer who hit it is
+  // never locked out of hiring, they just have to clear the applicant first. Only
+  // one employment results, because there was only one accepted write.
+  assert.equal(client.readDoc('applications', 'app-1').status, 'accepted');
+  assert.equal(employments().length, 1);
+});
+
+test('re-sending a hire for an already-hired application records no second employment', async () => {
+  seedInterviewedApplication();
+  await hire();
+  assert.equal(employments().length, 1);
+
+  // STAGE 7G-1: the gate exempts an application that is already `accepted`, so this
+  // retry -- the one ViewJobApplications.jsx performs after a partial failure --
+  // still succeeds, and employmentService's own previousStatus guard still holds.
+  const res = await hire();
+
+  assert.equal(res.status, 200);
+  assert.equal(employments().length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// 5. Each party can read their own employments.
 // ---------------------------------------------------------------------------
 
 test('an employee can read their own employments', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
 
   const res = await employeeApi.get('/employments/employee/employee-1');
@@ -326,7 +428,7 @@ test('an employee can read their own employments', async () => {
 });
 
 test('an employer can read their own employments', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
 
   const res = await employerApi.get('/employments/employer/employer-1');
@@ -345,7 +447,7 @@ test('an employer can read their own employments', async () => {
 });
 
 test('the read returns the stored document unreshaped', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
 
   const res = await employeeApi.get('/employments/employee/employee-1');
@@ -358,7 +460,7 @@ test('the read returns the stored document unreshaped', async () => {
 });
 
 test('an employment recorded by a hire is immediately readable by both parties', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
 
   const byEmployee = await employeeApi.get('/employments/employee/employee-1');
@@ -372,7 +474,7 @@ test('an employment recorded by a hire is immediately readable by both parties',
 });
 
 test('each side sees only their own employments', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
   client.seed(
     'employments',
@@ -395,7 +497,7 @@ test('each side sees only their own employments', async () => {
 });
 
 test('an employer is not shown the employments they are party to as an employee', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
 
   // Reading the *employee* path with their own uid is permitted by the guard --
@@ -420,11 +522,11 @@ test('the reads return an empty list, not a 404, when there is nothing yet', asy
 });
 
 // ---------------------------------------------------------------------------
-// 4. Neither party can read the other's employments.
+// 6. Neither party can read the other's employments.
 // ---------------------------------------------------------------------------
 
 test('an employee cannot read another employee\'s employments', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
   client.seed(
     'employments',
@@ -444,7 +546,7 @@ test('an employee cannot read another employee\'s employments', async () => {
 });
 
 test('an employer cannot read another employer\'s employments', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
   client.seed(
     'employments',
@@ -462,7 +564,7 @@ test('an employer cannot read another employer\'s employments', async () => {
 });
 
 test('an employer cannot reach their own employments through another user\'s uid', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
   client.seed(
     'employments',
@@ -488,7 +590,7 @@ test('both reads require authentication', async () => {
 });
 
 test('an invalid token cannot read employments', async () => {
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
 
   const res = await client.get('/employments/employee/employee-1', { token: 'not-a-real-token' });
@@ -564,7 +666,7 @@ test('the employment status allow-list is active/ended and only active is writte
   assert.deepEqual(employmentService.EMPLOYMENT_STATUSES, ['active', 'ended']);
   assert.equal(employmentService.ACTIVE_EMPLOYMENT_STATUS, 'active');
 
-  seedPendingApplication();
+seedInterviewedApplication();
   await hire();
 
   assert.equal(employments()[0].status, employmentService.ACTIVE_EMPLOYMENT_STATUS);

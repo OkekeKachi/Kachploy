@@ -308,8 +308,48 @@ const listApplicationsForJob = async (jobId) => {
  *
  * `paused` is not a job status and is not introduced here; `tasks` statuses are
  * out of scope.
+ *
+ * ---------------------------------------------------------------------------
+ * STAGE 7G-1: `interviewed`, the state between applied and hired.
+ *
+ * The lifecycle this now enforces is four values wide:
+ *
+ *   pending      applied, not yet cleared for hiring
+ *   interviewed  the interview process is done; the applicant may now be hired
+ *   accepted     hired
+ *   rejected     not hired
+ *
+ * `interviewed` exists because `accepted` already means two different things --
+ * "hired" to employmentService and to requireTaskAssignment, and "the winning
+ * application" to the employer's restatus-everyone sweep -- and because nothing
+ * in the model previously represented "the interview happened". Without it an
+ * employer can hire an applicant straight from `pending`, with no interview
+ * having been scheduled, held or completed.
+ *
+ * It is a value allow-list, like the rest: an employer may still move an
+ * application between any two of these repeatedly. What stops a premature hire is
+ * not a transition matrix but the one rule in updateApplicationStatus below.
+ *
+ * It is written by an explicit employer action, NOT derived from an interview's
+ * status. That is deliberate: deriving it would mean interviewService writing to
+ * the applications collection, inverting the deliberate isolation between the two
+ * domains (interviewService.js, "WHAT DELIBERATELY DOES NOT EXIST YET", pinned by
+ * interviews.test.js), and it would make cancelling or rescheduling a second
+ * interview silently revoke eligibility.
  */
-const APPLICATION_STATUSES = ['pending', 'accepted', 'rejected'];
+const APPLICATION_STATUSES = ['pending', 'interviewed', 'accepted', 'rejected'];
+
+/**
+ * STAGE 7G-1: the value that means the applicant is cleared for hiring.
+ *
+ * This service owns the lifecycle, so it owns this name. `accepted` is NOT
+ * re-spelled here: employmentService already exports the constant that means
+ * "hired" and owns the employment consequence of it, and duplicating the literal
+ * here would be the same drift auth.js:36 documents when it reproduces its own
+ * copy for requireTaskAssignment. There is now one owner for both values.
+ */
+const INTERVIEWED_APPLICATION_STATUS = 'interviewed';
+const HIRED_APPLICATION_STATUS = employmentService.HIRED_APPLICATION_STATUS;
 
 /**
  * Sets an application's status.
@@ -377,6 +417,36 @@ const APPLICATION_STATUSES = ['pending', 'accepted', 'rejected'];
  * path. The write failure is logged instead, so it stays observable in the server
  * log rather than becoming a false client-side failure. A repair path belongs with
  * the deferred employment lifecycle work.
+ *
+ * ---------------------------------------------------------------------------
+ * STAGE 7G-1: the hire gate.
+ *
+ * `accepted` is refused unless the application's current status is
+ * `interviewed` or is already `accepted`. That is the whole of the lifecycle
+ * rule: an employer cannot hire an applicant who has not been cleared for hiring,
+ * and re-sending `accepted` for a hire that already happened stays idempotent.
+ *
+ * WHY THE CURRENT STATUS IS READ HERE RATHER THAN TAKEN FROM hireContext.
+ * hireContext carries previousStatus, and using it would cost no read -- but it
+ * is optional and defaults to null, so a caller that omits it would bypass the
+ * rule entirely, and the rule would be enforced only as far as one caller
+ * cooperates. A lifecycle invariant that a caller can switch off by passing fewer
+ * arguments is not enforcement. The status is therefore read from the application
+ * document, which makes the gate unbypassable on the service's own terms.
+ *
+ * WHY THE READ IS NARROWED TO `accepted`. Every other status write is unaffected
+ * by the rule, so rejecting, clearing or re-listing an application must not pay
+ * for a read it does not need -- and must not gain a new failure mode. The read
+ * is issued only on the one branch that has a precondition to check.
+ *
+ * WHY A MISSING DOCUMENT SKIPS THE GATE. The gate has nothing to say about an
+ * application that is not there, and the router's requireApplicationReviewer has
+ * already turned that into a 404 before this runs. Skipping it leaves the write
+ * itself to fail exactly as it did before this stage, rather than replacing a
+ * not-found outcome with a validation error.
+ *
+ * NO TRANSACTION, unchanged: the status write and the employment add remain two
+ * independent writes, with the divergence window Stage 7A recorded.
  */
 const updateApplicationStatus = async (applicationId, newStatus, hireContext = null) => {
     if (!newStatus) throw new ApplicationValidationError('Status is required');
@@ -385,6 +455,24 @@ const updateApplicationStatus = async (applicationId, newStatus, hireContext = n
         throw new ApplicationValidationError(
             `Invalid status. Must be one of: ${APPLICATION_STATUSES.join(', ')}.`
         );
+    }
+
+    if (newStatus === HIRED_APPLICATION_STATUS) {
+        const snapshot = await applicationRepository.getApplicationById(applicationId);
+
+        if (snapshot.exists) {
+            const currentStatus = snapshot.data().status;
+            const alreadyHired = currentStatus === HIRED_APPLICATION_STATUS;
+            const clearedForHiring = currentStatus === INTERVIEWED_APPLICATION_STATUS;
+
+            if (!alreadyHired && !clearedForHiring) {
+                const described = currentStatus === undefined ? 'unset' : `"${currentStatus}"`;
+                throw new ApplicationValidationError(
+                    `Cannot mark an application as hired while its status is ${described}. `
+                    + `An application must be "${INTERVIEWED_APPLICATION_STATUS}" before it can be hired.`
+                );
+            }
+        }
     }
 
     await applicationRepository.updateApplicationStatusField(applicationId, newStatus);

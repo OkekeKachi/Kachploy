@@ -24,6 +24,16 @@ const canonicalAppStatus = (status) => {
 // shown to the user.
 const APP_STATUS_LABEL = {
     pending: 'Pending',
+    // STAGE 7G-3: `interviewed` is the state an employer puts an application in when
+    // they clear the applicant for hiring (Stage 7G-2 added the action). Labelled
+    // "Cleared for hiring" to match the employer page word for word, so the applicant
+    // and the employer are looking at the same words for the same state.
+    //
+    // This is display-only. The applicant cannot reach this state, cannot change it,
+    // and cannot leave it: withdrawal below is still the only action on this page, and
+    // it is still shown because `interviewed` is simply not `ACCEPTED`. Only the
+    // employer's own page writes it.
+    interviewed: 'Cleared for hiring',
     [ACCEPTED]: 'Employed',
     rejected: 'Not Hired',
 };

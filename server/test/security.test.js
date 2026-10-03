@@ -461,7 +461,14 @@ test('the employer who posted the job can still change application status', asyn
   client.seed(
     'applications',
     'app-1',
-    application({ jobId: 'job-1', employeeId: 'employee-1' })
+    // STAGE 7G-1: seeded `interviewed` rather than left at the fixture's
+    // `pending`, because a hire is refused from `pending`. This test is about WHO
+    // may change the status, so the value it writes has to be one the endpoint
+    // accepts for a reason other than authorization: `accepted` from `interviewed`
+    // fails on the lifecycle gate, not on the guard, and a 400 here would make the
+    // test assert the wrong cause. The allow-list itself is covered in
+    // applications.test.js.
+    application({ jobId: 'job-1', employeeId: 'employee-1', status: 'interviewed' })
   );
   const employer = await client.authed('employer-1');
 

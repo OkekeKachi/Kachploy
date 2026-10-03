@@ -480,7 +480,10 @@ test('GET /applications/counts requires authentication', async () => {
 
 test('PUT /applications/:id/status updates the status', async () => {
   client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
-  client.seed('applications', 'app-1', application({ jobId: 'job-1' }));
+  // STAGE 7G-1: seeded `interviewed`, not the fixture's `pending`. A hire is only
+  // legal from `interviewed` (or from `accepted`, for a re-send), so this test
+  // exercises the write itself rather than the gate that now precedes it.
+  client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'interviewed' }));
 
   const res = await employerApi.put('/applications/app-1/status', {
     body: { status: 'accepted' },
@@ -504,7 +507,9 @@ test('PUT /applications/:id/status rejects a value outside the allow-list', asyn
     const res = await employerApi.put('/applications/app-1/status', { body: { status } });
 
     assert.equal(res.status, 400, `expected 400 for ${status}`);
-    assert.equal(res.body.message, 'Invalid status. Must be one of: pending, accepted, rejected.');
+    // STAGE 7G-1: the allow-list gained `interviewed`, and this message is
+    // generated from APPLICATION_STATUSES, so the exact string moved.
+    assert.equal(res.body.message, 'Invalid status. Must be one of: pending, interviewed, accepted, rejected.');
     assert.equal(client.readDoc('applications', 'app-1').status, 'pending');
   }
 });
@@ -548,15 +553,123 @@ test('PUT /applications/:id/status accepts every canonical status', async () => 
   client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
 
   // Stage 5G: an allow-list, not a transition matrix. Each canonical value is
-  // written from a pending application with no relation to the previous status.
-  for (const status of ['pending', 'accepted', 'rejected']) {
-    client.seed('applications', 'app-1', application({ jobId: 'job-1' }));
+  // written from the same starting application with no relation to the previous
+  // status.
+  //
+  // STAGE 7G-1: the seed is `interviewed` rather than `pending`, and the list
+  // gained a fourth value. `pending` would make the `accepted` case fail on the
+  // hire gate instead of on the allow-list, which would no longer be what this
+  // test is about; `interviewed` is a status every one of the four is legal from,
+  // so the allow-list stays the only thing under test.
+  for (const status of ['pending', 'interviewed', 'accepted', 'rejected']) {
+    client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'interviewed' }));
 
     const res = await employerApi.put('/applications/app-1/status', { body: { status } });
 
     assert.equal(res.status, 200, `expected 200 for ${status}`);
     assert.equal(client.readDoc('applications', 'app-1').status, status);
   }
+});
+
+test('PUT /applications/:id/status refuses to hire a pending application', async () => {
+  client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+  client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'pending' }));
+
+  const res = await employerApi.put('/applications/app-1/status', {
+    body: { status: 'accepted' },
+  });
+
+  // STAGE 7G-1: the lifecycle rule. An applicant who has not been cleared for
+  // hiring cannot be hired, and the refusal is a validation error on the existing
+  // ApplicationValidationError path -- no new error class, no new status code.
+  assert.equal(res.status, 400);
+  assert.match(res.body.message, /interviewed/);
+  // The validation failure precedes the write, so nothing moved.
+  assert.equal(client.readDoc('applications', 'app-1').status, 'pending');
+});
+
+test('PUT /applications/:id/status hires an interviewed application', async () => {
+  client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+  client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'interviewed' }));
+
+  const res = await employerApi.put('/applications/app-1/status', {
+    body: { status: 'accepted' },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(client.readDoc('applications', 'app-1').status, 'accepted');
+});
+
+test('PUT /applications/:id/status re-sending a hire to a hired application stays idempotent', async () => {
+  client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+  client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'accepted' }));
+
+  // STAGE 7G-1: the gate exempts an application that is already `accepted`, so the
+  // retry a client performs after a failed hire still succeeds. Without that
+  // exemption the documented retry path in ViewJobApplications.jsx would turn a
+  // partial failure into a permanent one.
+  const res = await employerApi.put('/applications/app-1/status', {
+    body: { status: 'accepted' },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(client.readDoc('applications', 'app-1').status, 'accepted');
+});
+
+test('PUT /applications/:id/status refuses to hire an already-rejected application', async () => {
+  client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+  client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'rejected' }));
+
+  const res = await employerApi.put('/applications/app-1/status', {
+    body: { status: 'accepted' },
+  });
+
+  // The two directions of the decision are not symmetric. `rejected` -> `accepted`
+  // would silently undo a rejection, so it has to pass back through `interviewed`
+  // first -- which is a decision the employer makes deliberately, not a side effect
+  // of a restatus sweep.
+  assert.equal(res.status, 400);
+  assert.equal(client.readDoc('applications', 'app-1').status, 'rejected');
+});
+
+test('PUT /applications/:id/status refuses to hire a legacy application that predates the allow-list', async () => {
+  client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+  // A document written before Stage 5G validated the field, and one written before
+  // Stage 7G-1 existed: it holds the legacy title-cased `Employed`.
+  client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'Employed' }));
+
+  const res = await employerApi.put('/applications/app-1/status', {
+    body: { status: 'accepted' },
+  });
+
+  // The read side still displays this value (the tests above pin that), but the
+  // gate compares it against the canonical pair and does not recognise it as
+  // hired. It must therefore be cleared for hiring explicitly, like any other
+  // status the gate does not recognise -- the alternative, treating a legacy
+  // value as hired, would make an unread document decide the outcome.
+  assert.equal(res.status, 400);
+  assert.equal(client.readDoc('applications', 'app-1').status, 'Employed');
+});
+
+test('PUT /applications/:id/status rejects an application whose status field is absent', async () => {
+  client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+  // Seeded without a `status` key rather than with an undefined one, which
+  // Firestore rejects outright. Built as a local so the fixture object is not
+  // mutated for any later test that reuses it.
+  const statusless = application({ jobId: 'job-1' });
+  delete statusless.status;
+  client.seed('applications', 'app-1', statusless);
+
+  const res = await employerApi.put('/applications/app-1/status', {
+    body: { status: 'accepted' },
+  });
+
+  // A document with no status is not a document that has been cleared for hiring,
+  // so the gate refuses it and the message says so rather than printing
+  // `undefined`. This can only arise from a hand-written or pre-Stage-5G
+  // document: applyToJob has always written `pending`.
+  assert.equal(res.status, 400);
+  assert.match(res.body.message, /unset/);
 });
 
 // ------------------------------------------------------------ DELETE /:id
