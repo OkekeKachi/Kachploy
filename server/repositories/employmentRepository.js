@@ -65,8 +65,30 @@ const listEmploymentsByEmployee = (employeeId) =>
 const listEmploymentsByEmployer = (employerId) =>
     db.collection('employments').where('employerId', '==', employerId).get();
 
+/**
+ * Every employment recorded for one application.
+ *
+ * STAGE 7H-2. Added for the duplicate-employment guard in
+ * employmentService.createEmploymentFromHire, and nothing else calls it: the two
+ * read endpoints keep using the employee and employer queries above, because a
+ * caller asking "what has this person been hired for" is not the same question as
+ * "has this application already been hired".
+ *
+ * Single-field equality filter on `applicationId`, so like its two siblings it
+ * needs no composite Firestore index. `applicationId` is on every employment this
+ * codebase writes -- it is one of the four fields createEmploymentFromHire
+ * validates before it adds anything -- so there is no document this query could
+ * miss for a reason that matters, and no backfill to consider.
+ *
+ * Returns the raw QuerySnapshot, so the service keeps ownership of what the empty
+ * or non-empty result means, exactly as it does for the other two reads.
+ */
+const listEmploymentsByApplication = (applicationId) =>
+    db.collection('employments').where('applicationId', '==', applicationId).get();
+
 module.exports = {
     addEmployment,
     listEmploymentsByEmployee,
     listEmploymentsByEmployer,
+    listEmploymentsByApplication,
 };

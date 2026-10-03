@@ -152,6 +152,16 @@ const resolveStartDate = (jobStartDate) =>
  * the same status: the application is already accepted, so this returns null. A
  * repair path for that case belongs with the employment lifecycle work, not here.
  *
+ * STAGE 7H-2 adds the check that `previousStatus` inference could not make. The
+ * inference above is caller-supplied and only holds while the application stays
+ * `accepted`; an application that is rejected and then cleared for hiring and
+ * hired again arrives with previousStatus `interviewed`, passes the inference, and
+ * used to get a second employment for the same hire. So after validating the
+ * fields, this now asks the `employments` collection whether this application
+ * already has one and returns null if it does. The `previousStatus` guard is kept:
+ * it is cheaper, and keeping it preserves the failed-write behaviour recorded
+ * above. See the comment at the check for what read-before-write does not settle.
+ *
  * An employer who later rejects an application that is recorded as employed does
  * not end the employment; nothing in this stage writes `ended` or an endDate.
  * That is the deferred end-employment write, and it is why this stage adds no
@@ -167,6 +177,35 @@ const createEmploymentFromHire = async ({ applicationId, newStatus, previousStat
             throw new EmploymentValidationError(`Missing required field: ${field}`);
         }
     }
+
+    // STAGE 7H-2: the authoritative duplicate check.
+    //
+    // The `previousStatus` guard above is an INFERENCE about the application -- "it
+    // was already accepted, so it was already hired" -- and it is caller-supplied.
+    // It is wrong for any application that passed through `rejected` on its way
+    // back, which Stage 7G made reachable from the employer UI: reject, clear for
+    // hiring, hire again. That path left two `active` employments for one hire,
+    // because the second write saw previousStatus `interviewed` rather than
+    // `accepted`. Asking the collection instead of inferring from the application
+    // is what closes it.
+    //
+    // Deliberately AFTER the required-field loop, so a call that cannot describe an
+    // employment still fails on its own validation without spending a read, and
+    // BEFORE the add, so at most one document is ever written for an application.
+    //
+    // Any existing document blocks the add regardless of its status: an `ended`
+    // employment still means this application was already hired, and hiring the
+    // same applicant again for the same job is properly a new application.
+    //
+    // NOT A TRANSACTION, and this does not make it one. This is read-before-write:
+    // two genuinely concurrent hires of the same application can both observe an
+    // empty collection and both write. No transaction is permitted in this stage,
+    // and that residual window is the same class of divergence the two-write hire
+    // above already records. Closing it needs a transaction or a uniqueness
+    // constraint on the document id, both of which belong with the employment
+    // lifecycle work rather than here.
+    const existing = await employmentRepository.listEmploymentsByApplication(applicationId);
+    if (!existing.empty) return null;
 
     const employmentId = await employmentRepository.addEmployment({
         employerId,

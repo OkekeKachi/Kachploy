@@ -405,6 +405,120 @@ test('re-sending a hire for an already-hired application records no second emplo
 });
 
 // ---------------------------------------------------------------------------
+// STAGE 7H-2: one employment per application.
+//
+// The 7G-1 tests above cover the paths the employer UI actually walks. These cover
+// the duplicate the `previousStatus` inference could not see: an application that
+// is rejected and then cleared for hiring and hired again arrives with
+// previousStatus `interviewed`, so the inference passed and a second employment was
+// written for a single hire. The guard is now a query on the collection instead.
+// ---------------------------------------------------------------------------
+
+test('a first hire records exactly one employment', async () => {
+  seedInterviewedApplication();
+
+  const res = await hire();
+
+  assert.equal(res.status, 200);
+  assert.equal(employments().length, 1);
+  assert.equal(employments()[0].applicationId, 'app-1');
+  assert.equal(employments()[0].status, 'active');
+});
+
+test('hiring again after a rejection records no second employment', async () => {
+  // The regression this stage exists for. Every write here succeeds -- the gate
+  // permits each one, because before the rejection the application is `accepted`
+  // and after the clear it is `interviewed` -- so nothing but the collection check
+  // stands between this path and a duplicate.
+  seedInterviewedApplication();
+  await hire();
+  assert.equal(employments().length, 1);
+
+  const rejected = await hire('rejected');
+  assert.equal(rejected.status, 200);
+
+  const cleared = await hire('interviewed');
+  assert.equal(cleared.status, 200);
+
+  const rehired = await hire();
+  assert.equal(rehired.status, 200);
+
+  // The application ends accepted and the hire is not undone -- rejecting an
+  // application is not an end-employment write, which is still deferred.
+  assert.equal(client.readDoc('applications', 'app-1').status, 'accepted');
+
+  // One hire, one employment. The first document is untouched: the guard skips the
+  // add rather than replacing anything.
+  assert.equal(employments().length, 1);
+  assert.equal(employments()[0].status, 'active');
+  assert.equal(employments()[0].employeeId, 'employee-1');
+});
+
+test('an existing employment for the application blocks a second one', async () => {
+  // The guard asks the collection rather than the application, so it holds even
+  // when the application says nothing useful -- and this seed is chosen so the OLD
+  // inference would NOT have caught it. The application is `interviewed`, so
+  // previousStatus is `interviewed` rather than `accepted`: the gate permits the
+  // hire and the previousStatus guard passes it straight through. Only a query on
+  // the collection stands between this and a duplicate. The employment is seeded
+  // directly because there is no create endpoint for this resource.
+  seedInterviewedApplication();
+  client.seed('employments', 'emp-existing', employment({ applicationId: 'app-1' }));
+  assert.equal(employments().length, 1);
+
+  const res = await hire();
+
+  // The status write still succeeds and is still reported as a success -- the
+  // guard governs the employment, not the application's status.
+  assert.equal(res.status, 200);
+  assert.equal(client.readDoc('applications', 'app-1').status, 'accepted');
+
+  // The pre-existing document is still the only one, and it is still the one that
+  // was there: nothing was overwritten and nothing was added.
+  assert.equal(employments().length, 1);
+  assert.deepEqual(Object.keys(client.readAll('employments')), ['emp-existing']);
+});
+
+test('an employment for a different application does not block this one', async () => {
+  // The query is scoped to the application, not to the job or the pair of people:
+  // one employer hiring two applicants for the same job is two employments, and a
+  // guard that matched more widely would silently drop the second hire.
+  seedInterviewedApplication();
+  client.seed(
+    'employments',
+    'emp-other',
+    employment({ employerId: 'employer-1', employeeId: 'employee-2', applicationId: 'app-2' })
+  );
+
+  const res = await hire();
+
+  assert.equal(res.status, 200);
+  assert.equal(employments().length, 2);
+  assert.deepEqual(
+    employments().map((e) => e.applicationId).sort(),
+    ['app-1', 'app-2']
+  );
+});
+
+test('an ended employment still blocks a second one for the same application', async () => {
+  // Matching on existence rather than on status: an `ended` employment still means
+  // this application was already hired, and hiring the same applicant again for the
+  // same job is properly a new application rather than a second record here.
+  seedInterviewedApplication();
+  client.seed(
+    'employments',
+    'emp-ended',
+    employment({ applicationId: 'app-1', status: 'ended', endDate: '2026-10-06' })
+  );
+
+  const res = await hire();
+
+  assert.equal(res.status, 200);
+  assert.equal(employments().length, 1);
+  assert.equal(employments()[0].status, 'ended');
+});
+
+// ---------------------------------------------------------------------------
 // 5. Each party can read their own employments.
 // ---------------------------------------------------------------------------
 
