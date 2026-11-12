@@ -4,7 +4,20 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vite + React</title>
+    <title>Kachploy</title>
+    <!-- STAGE 11.1: Inter is the real UI font. Before this the stylesheet named
+         'Roboto' but no request ever loaded it, so the app silently fell back to the
+         browser default. The preconnects make the fetch cheaper; the system fallback
+         stack in index.css keeps the UI readable if the request fails.
+         The Material Icons font stays: JobSplitView.jsx and ProfileSideBar.jsx still
+         use <i className="material-icons">, and replacing them is a page-redesign job,
+         not a shell job. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   </head>
   <body>
