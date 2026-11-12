@@ -1,6 +1,172 @@
 @import "tailwindcss";
-body {
-    background: #ffffff;
-    font-family: 'Roboto', sans-serif;
+
+/*
+  STAGE 11.1: the Kachploy design system.
+
+  Before this file the whole client had one global rule -- a #ffffff body and a
+  `font-family: 'Roboto'` that was never loaded anywhere -- so every page chose its
+  own colours, radii and shadows locally. This block is that missing foundation:
+  a single, restrained, professional palette and a small set of shape/type tokens,
+  expressed in the Tailwind v4 `@theme` syntax so they compile to real utilities
+  (`bg-surface`, `text-foreground-muted`, `border-border`, `shadow-card`, ...) that
+  pages and the new shared primitives can reuse instead of re-inventing.
+
+  It is deliberately a neutral palette with ONE accent. There are no gradients in
+  the token set: the previous `bg-gradient-to-br` treatments were page-local choices,
+  and the default surface is now flat.
+*/
+@theme {
+  /*
+    Typography. Inter is loaded from Google Fonts in client/index.html (see the
+    note there). It replaces the Roboto that was named but never shipped. The
+    fallback stack is a full system stack, so a failed font request degrades to the
+    operating system's UI font rather than to a serif default.
+  */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+
+  /* Page background and surfaces. */
+  --color-canvas: #f8fafc;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f1f5f9;
+  --color-surface-sunken: #e2e8f0;
+
+  /* Text roles. */
+  --color-foreground: #0f172a;
+  --color-foreground-muted: #475569;
+  --color-foreground-subtle: #94a3b8;
+  --color-foreground-inverse: #ffffff;
+
+  /* Borders and separators. */
+  --color-border: #e2e8f0;
+  --color-border-strong: #cbd5e1;
+
+  /* Primary accent, its hover state and its soft surface. */
+  --color-accent: #4f46e5;
+  --color-accent-hover: #4338ca;
+  --color-accent-subtle: #eef2ff;
+  --color-accent-subtle-foreground: #3730a3;
+
+  /* Semantic states, each with a soft background and a readable foreground. */
+  --color-success: #16a34a;
+  --color-success-subtle: #dcfce7;
+  --color-success-subtle-foreground: #166534;
+
+  --color-warning: #d97706;
+  --color-warning-subtle: #fef3c7;
+  --color-warning-subtle-foreground: #92400e;
+
+  --color-danger: #dc2626;
+  --color-danger-subtle: #fee2e2;
+  --color-danger-subtle-foreground: #991b1b;
+
+  --color-info: #0284c7;
+  --color-info-subtle: #e0f2fe;
+  --color-info-subtle-foreground: #075985;
+
+  /* Corner radii. */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  /* Two shadows only: a resting surface and a raised one. */
+  --shadow-card: 0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.06);
+  --shadow-raised: 0 10px 15px -3px rgb(15 23 42 / 0.08), 0 4px 6px -4px rgb(15 23 42 / 0.05);
 }
 
+/*
+  Base layer. The body now paints the canvas token and uses the loaded sans stack;
+  antialiasing is on so text weight matches the intended design at small sizes.
+  `:focus-visible` gets one consistent, visible ring app-wide, which is the single
+  biggest accessibility gap the Stage 11.0 audit found in interactive controls.
+*/
+@layer base {
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+/*
+  "How You Get Paid" uses a fixed background on desktop, where the browser
+  reliably pins the image to the viewport while the section content scrolls over
+  it. Mobile browsers (notably iOS Safari) either ignore or badly repaint
+  `background-attachment: fixed`, so those devices keep the same image and
+  cover sizing with normal scrolling instead of risking jank or a background
+  that detaches from the section.
+*/
+.payments-parallax-bg {
+  background-attachment: scroll;
+  background-color: #0a0a0a;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+  .payments-parallax-bg {
+    background-attachment: fixed;
+  }
+}
+
+/*
+  Marketing pages: a faint engineering grid behind dark sections, plus a single
+  short entrance animation. Both are decorative only and are disabled when the
+  visitor asks the operating system to reduce motion.
+*/
+.marketing-grid {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.055) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+.marketing-grid-fade {
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 55%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 55%, transparent 100%);
+}
+
+.marketing-rise {
+  animation: marketing-rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.marketing-rise-delay-1 {
+  animation-delay: 0.08s;
+}
+
+.marketing-rise-delay-2 {
+  animation-delay: 0.16s;
+}
+
+.marketing-rise-delay-3 {
+  animation-delay: 0.24s;
+}
+
+@keyframes marketing-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marketing-rise,
+  .marketing-rise-delay-1,
+  .marketing-rise-delay-2,
+  .marketing-rise-delay-3 {
+    animation: none;
+  }
+}
