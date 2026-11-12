@@ -13,6 +13,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('crypto');
 const { startTestServer } = require('../testing/testApp');
 const { job, application } = require('../testing/fixtures');
 
@@ -29,11 +30,22 @@ test.after(async () => {
   await client.close();
 });
 
+test.afterEach(async () => {
+  // Reset the shared job‑1 document to a clean open state so that later tests
+  // are not affected by earlier tests that changed job status or deadline.
+  client.seed('jobs', 'job-1', job());
+});
+
 test.beforeEach(async () => {
   client.fake.resetAll();
   // Fixtures use postedBy: 'employer-1' and employeeId: 'employee-1'.
   employeeApi = await client.authed('employee-1');
   employerApi = await client.authed('employer-1');
+  // Reset the shared job‑1 document to a known open state so that every test
+  // starts from the same baseline.  Tests that need a different job status
+  // (filled / closed / custom deadline) will override this with their own
+  // `client.seed` call.
+  await client.seed('jobs', 'job-1', job());
 });
 
 // ------------------------------------------------------------------- /apply
@@ -57,6 +69,158 @@ test('POST /applications/apply stores an application', async () => {
   assert.equal(stored.employeeId, 'employee-1');
   assert.equal(stored.status, 'pending');
   assert.equal(stored.message, 'I can do this');
+});
+
+test('POST /applications/apply rejects a sequential duplicate submission', async () => {
+  client.seed('jobs', 'job-1', job());
+  const body = { jobId: 'job-1', fullName: 'Test User', message: 'First' };
+
+  const first = await employeeApi.post('/applications/apply', { body });
+  assert.equal(first.status, 200);
+
+  const second = await employeeApi.post('/applications/apply', { body });
+
+  assert.equal(second.status, 400);
+  assert.equal(second.body.message, 'You have already applied to this job');
+  assert.equal(Object.keys(client.readAll('applications')).length, 1);
+});
+
+test('withdrawing an application allows a fresh re-application', async () => {
+  client.seed('jobs', 'job-1', job());
+  const body = { jobId: 'job-1', fullName: 'Test User', message: 'First' };
+
+  const first = await employeeApi.post('/applications/apply', { body });
+  assert.equal(first.status, 200);
+  const firstId = Object.keys(client.readAll('applications'))[0];
+  assert.ok(firstId);
+
+  const withdrawn = await employeeApi.delete(`/applications/${firstId}`);
+  assert.equal(withdrawn.status, 200);
+  assert.equal(Object.keys(client.readAll('applications')).length, 0);
+  assert.equal(Object.keys(client.readAll('applicationUniquenessKeys')).length, 0,
+    'withdrawal removes the uniqueness key with the application');
+
+  const second = await employeeApi.post('/applications/apply', {
+    body: { ...body, message: 'Second' },
+  });
+  assert.equal(second.status, 200);
+
+  const reapplied = Object.keys(client.readAll('applications'));
+  assert.equal(reapplied.length, 1);
+  assert.notEqual(reapplied[0], firstId,
+    're-application gets a fresh application id, not the withdrawn one');
+});
+
+test('apply replaces a stale uniqueness key left by an out-of-band application delete', async () => {
+  client.seed('jobs', 'job-1', job());
+  const keyId = crypto
+    .createHash('sha256')
+    .update('job-1\u0000employee-1')
+    .digest('hex');
+  client.seed('applicationUniquenessKeys', keyId, {
+    jobId: 'job-1',
+    employeeId: 'employee-1',
+    applicationId: 'application-that-was-deleted',
+  });
+
+  const res = await employeeApi.post('/applications/apply', {
+    body: { jobId: 'job-1', fullName: 'Test User', message: 'Recover' },
+  });
+  assert.equal(res.status, 200);
+
+  const applications = client.readAll('applications');
+  assert.equal(Object.keys(applications).length, 1);
+  assert.equal(
+    client.readAll('applicationUniquenessKeys')[keyId].applicationId,
+    Object.keys(applications)[0]
+  );
+});
+
+test('POST /applications/apply allows only one winner under concurrent submissions', async () => {
+  client.seed('jobs', 'job-1', job());
+  const body = { jobId: 'job-1', fullName: 'Test User', message: 'Same instant' };
+
+  // Hold requests at the existing duplicate lookup until at least two have
+  // arrived. This makes the check-then-create race deterministic: both observe
+  // an empty collection before any create runs. The lookup and the create
+  // themselves remain the real repository calls.
+  const applicationRepository = require('../repositories/applicationRepository');
+  const originalLookup = applicationRepository.listApplicationsByJobAndEmployee;
+  const submissions = 5;
+  const concurrentChecks = 2;
+  let arrived = 0;
+  let releaseLookup;
+  const raceReady = new Promise((resolve) => {
+    releaseLookup = resolve;
+  });
+
+  applicationRepository.listApplicationsByJobAndEmployee = async (...args) => {
+    arrived += 1;
+    if (arrived === concurrentChecks) releaseLookup();
+    await raceReady;
+    return originalLookup(...args);
+  };
+
+  let results;
+  try {
+    results = await Promise.all(
+      Array.from({ length: submissions }, () => employeeApi.post('/applications/apply', { body }))
+    );
+  } finally {
+    applicationRepository.listApplicationsByJobAndEmployee = originalLookup;
+  }
+
+  const winners = results.filter((res) => res.status === 200);
+  const duplicates = results.filter((res) => res.status === 400);
+
+  assert.equal(winners.length, 1, 'exactly one concurrent submission succeeds');
+  assert.equal(duplicates.length, 4, 'every other submission is rejected');
+  for (const duplicate of duplicates) {
+    assert.equal(duplicate.body.message, 'You have already applied to this job');
+  }
+
+  const stored = Object.values(client.readAll('applications'));
+  assert.equal(stored.length, 1, 'the race created no duplicate application');
+  assert.equal(stored[0].jobId, 'job-1');
+  assert.equal(stored[0].employeeId, 'employee-1');
+
+  const calls = client.fake.store.calls;
+  const duplicateChecks = calls.filter(
+    (call) => call.op === 'query' && call.path === 'applications'
+      && Array.isArray(call.constraints) && call.constraints.length === 2
+  );
+  const firstCreate = calls.findIndex(
+    (call) => call.op === 'create' && call.path.startsWith('applications/')
+  );
+  assert.ok(firstCreate >= 0, 'the application was written with an atomic create');
+  const checksBeforeCreate = calls
+    .slice(0, firstCreate)
+    .filter((call) => duplicateChecks.includes(call)).length;
+  assert.ok(
+    checksBeforeCreate >= 2,
+    'at least two concurrent requests passed the duplicate pre-check before the first create'
+  );
+});
+
+test('different (jobId, employeeId) applications remain independent under concurrency', async () => {
+  client.seed('jobs', 'job-1', job());
+  client.seed('jobs', 'job-2', job({ title: 'Second job' }));
+  const secondEmployee = await client.authed('employee-2');
+
+  const results = await Promise.all([
+    employeeApi.post('/applications/apply', {
+      body: { jobId: 'job-1', fullName: 'Test User', message: 'Job one' },
+    }),
+    employeeApi.post('/applications/apply', {
+      body: { jobId: 'job-2', fullName: 'Test User', message: 'Job two' },
+    }),
+    secondEmployee.post('/applications/apply', {
+      body: { jobId: 'job-1', fullName: 'Second User', message: 'Same job, other applicant' },
+    }),
+  ]);
+
+  assert.deepEqual(results.map((res) => res.status), [200, 200, 200]);
+  assert.equal(Object.keys(client.readAll('applications')).length, 3);
 });
 
 test('POST /applications/apply stamps dateApplied from the fake clock as a Timestamp', async () => {
@@ -483,7 +647,23 @@ test('PUT /applications/:id/status updates the status', async () => {
   // STAGE 7G-1: seeded `interviewed`, not the fixture's `pending`. A hire is only
   // legal from `interviewed` (or from `accepted`, for a re-send), so this test
   // exercises the write itself rather than the gate that now precedes it.
-  client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'interviewed' }));
+  client.seed('applications', 'app-1', application({ jobId: 'job-1', employeeId: 'employee-1', status: 'interviewed' }));
+  // STAGE 3C.1.1: need a genuinely accepted proposal
+  client.seed('contractProposals', 'prop-1', {
+    applicationId: 'app-1',
+    jobId: 'job-1',
+    employerId: 'employer-1',
+    employeeId: 'employee-1',
+    paymentMode: 'full',
+    currency: 'NGN',
+    totalAmountMinor: 1000000,
+    commissionBps: 500,
+    commissionAmountMinor: 50000,
+    milestones: [],
+    status: 'accepted',
+    acceptedAt: { _seconds: 1767225600, _nanoseconds: 0 },
+    acceptedBy: 'employee-1',
+  });
 
   const res = await employerApi.put('/applications/app-1/status', {
     body: { status: 'accepted' },
@@ -561,8 +741,34 @@ test('PUT /applications/:id/status accepts every canonical status', async () => 
   // hire gate instead of on the allow-list, which would no longer be what this
   // test is about; `interviewed` is a status every one of the four is legal from,
   // so the allow-list stays the only thing under test.
+  //
+  // STAGE 10H.2: the collections are reset each iteration (client.fake.reset()
+  // clears the store but not the issued tokens). Writing `accepted` now also
+  // records an employment, and a surviving `active` employment would make the
+  // `rejected` case fail on the new no-reject-while-employed rule -- a real
+  // precondition, but not the allow-list this test is about. Reseeding the job and
+  // the application keeps the two concerns apart.
   for (const status of ['pending', 'interviewed', 'accepted', 'rejected']) {
-    client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'interviewed' }));
+    client.fake.reset();
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+    client.seed('applications', 'app-1', application({ jobId: 'job-1', employeeId: 'employee-1', status: 'interviewed' }));
+    if (status === 'accepted') {
+      client.seed('contractProposals', 'prop-1', {
+        applicationId: 'app-1',
+        jobId: 'job-1',
+        employerId: 'employer-1',
+        employeeId: 'employee-1',
+        paymentMode: 'full',
+        currency: 'NGN',
+        totalAmountMinor: 1000000,
+        commissionBps: 500,
+        commissionAmountMinor: 50000,
+        milestones: [],
+        status: 'accepted',
+        acceptedAt: { _seconds: 1767225600, _nanoseconds: 0 },
+        acceptedBy: 'employee-1',
+      });
+    }
 
     const res = await employerApi.put('/applications/app-1/status', { body: { status } });
 
@@ -590,7 +796,22 @@ test('PUT /applications/:id/status refuses to hire a pending application', async
 
 test('PUT /applications/:id/status hires an interviewed application', async () => {
   client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
-  client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'interviewed' }));
+  client.seed('applications', 'app-1', application({ jobId: 'job-1', employeeId: 'employee-1', status: 'interviewed' }));
+  client.seed('contractProposals', 'prop-1', {
+    applicationId: 'app-1',
+    jobId: 'job-1',
+    employerId: 'employer-1',
+    employeeId: 'employee-1',
+    paymentMode: 'full',
+    currency: 'NGN',
+    totalAmountMinor: 1000000,
+    commissionBps: 500,
+    commissionAmountMinor: 50000,
+    milestones: [],
+    status: 'accepted',
+    acceptedAt: { _seconds: 1767225600, _nanoseconds: 0 },
+    acceptedBy: 'employee-1',
+  });
 
   const res = await employerApi.put('/applications/app-1/status', {
     body: { status: 'accepted' },
@@ -602,7 +823,7 @@ test('PUT /applications/:id/status hires an interviewed application', async () =
 
 test('PUT /applications/:id/status re-sending a hire to a hired application stays idempotent', async () => {
   client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
-  client.seed('applications', 'app-1', application({ jobId: 'job-1', status: 'accepted' }));
+  client.seed('applications', 'app-1', application({ jobId: 'job-1', employeeId: 'employee-1', status: 'accepted' }));
 
   // STAGE 7G-1: the gate exempts an application that is already `accepted`, so the
   // retry a client performs after a failed hire still succeeds. Without that
@@ -742,43 +963,503 @@ test('DELETE /applications/:applicationId no longer needs to write the parent jo
   assert.equal(Object.keys(client.readAll('applications')).length, 0);
 });
 
-// ----------------------------------------------------- duplicate POST /tasks
+// ------------------------------------------- STAGE 9F: the duplicate is gone
+//
+// The two tests that stood here asserted that POST /applications/tasks duplicated
+// POST /tasks: one that it answered 200 and wrote the document, one that it refused
+// an empty body with 400. Both are deleted with the route, because the route they
+// described no longer exists. Task creation is characterized in tasks.test.js, which
+// now also pins that this path 404s.
+//
+// Nothing below this line tests a task; this router creates applications only.
 
-test('POST /applications/tasks duplicates POST /tasks', async () => {
-  client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
-  // STAGE 6K: this route shares requireTaskAssignment with POST /tasks, so it now
-  // inherits the requirement that the assignee's application is accepted too.
-  client.seed(
-    'applications',
-    'app-1',
-    application({ jobId: 'job-1', employeeId: 'employee-1', status: 'accepted' })
-  );
+// ----------------------------------------- STAGE 12.12.1: resume downloads
+//
+// A resume is stored as a private reference ({ publicId, name, resourceType }) and
+// is only reachable through this endpoint, which mints a short-lived signed URL.
+// The signature is computed locally by the Cloudinary SDK, so these tests install
+// their own credentials and assert on the signed URL shape rather than calling the
+// cloud. The rule under test is authorization: only the applicant and the employer
+// who owns the job may receive a URL, and no caller may name the asset.
 
-  const res = await employerApi.post('/applications/tasks', {
-    body: {
+const RESUME_PUBLIC_ID = 'resumes/employee-1/resume-abc123';
+const RESUME_REFERENCE = {
+  publicId: RESUME_PUBLIC_ID,
+  name: 'cv.pdf',
+  resourceType: 'raw',
+};
+
+// Install deterministic Cloudinary credentials for the duration of one test and
+// restore whatever the environment held before. Mirrors the save/restore the
+// profile-photo signing tests use.
+async function withCloudinaryCredentials(run) {
+  const saved = {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    secret: process.env.CLOUDINARY_API_SECRET,
+  };
+
+  process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud';
+  process.env.CLOUDINARY_API_KEY = 'test-key';
+  process.env.CLOUDINARY_API_SECRET = 'test-secret';
+
+  try {
+    return await run();
+  } finally {
+    restoreEnv('CLOUDINARY_CLOUD_NAME', saved.cloudName);
+    restoreEnv('CLOUDINARY_API_KEY', saved.apiKey);
+    restoreEnv('CLOUDINARY_API_SECRET', saved.secret);
+  }
+}
+
+// Assigning `undefined` to process.env coerces it to the string "undefined", so a
+// variable that was absent before a test must be deleted, not reassigned.
+function restoreEnv(name, value) {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
+test('GET /applications/:id/resume/download returns a signed URL to the applicant', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+    client.seed('applications', 'app-1', application({
       jobId: 'job-1',
       employeeId: 'employee-1',
-      taskName: 'Replace washer',
-      taskDescription: 'Fit a new washer',
-      dueDate: '2026-10-01',
-    },
+      resume: RESUME_REFERENCE,
+    }));
+
+    const res = await employeeApi.get('/applications/app-1/resume/download');
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.name, 'cv.pdf');
+    assert.equal(typeof res.body.url, 'string');
+    assert.match(res.body.url, /^https:\/\//);
+    // The URL points at the stored public id, URL-encoded, and never exposes the
+    // api secret.
+    assert.equal(res.body.url.includes(encodeURIComponent(RESUME_PUBLIC_ID)), true);
+    assert.equal(res.body.url.includes('test-secret'), false);
   });
-
-  // DEAD CODE: this route is never called by the client, which uses POST /tasks.
-  // It now applies the same task-assignment authorization guard.
-  assert.equal(res.status, 200);
-  assert.equal(res.body.message, 'Task created successfully');
-
-  const stored = Object.values(client.readAll('tasks'))[0];
-  assert.equal(stored.taskName, 'Replace washer');
 });
 
-test('POST /applications/tasks rejects a body with no jobId or employeeId', async () => {
-  const res = await employerApi.post('/applications/tasks', { body: {} });
+test('GET /applications/:id/resume/download returns a signed URL to the job owner', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+    client.seed('applications', 'app-1', application({
+      jobId: 'job-1',
+      employeeId: 'employee-1',
+      resume: RESUME_REFERENCE,
+    }));
 
-  // Stage 1: was 200 (creating an entirely empty task document); the shared
-  // assignment guard now rejects it with 400 like POST /tasks does.
+    const res = await employerApi.get('/applications/app-1/resume/download');
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.url.includes(encodeURIComponent(RESUME_PUBLIC_ID)), true);
+  });
+});
+
+test('GET /applications/:id/resume/download signs the employer URL for the raw upload type', async () => {
+  // REGRESSION (employer path). A resume is stored as resource_type `raw`, type
+  // `upload`. verifyUploadedAsset proves an asset at those exact coordinates, but
+  // private_download_url with no `type` reaches Cloudinary's admin /download
+  // endpoint in the wrong storage class and is answered "Resource not found" for a
+  // file that exists -- so the employer's signed URL must carry BOTH coordinates:
+  // the raw namespace AND type=upload. This pins the second half of the mismatch
+  // that kept the job owner's download 404ing after the raw-namespace fix.
+  await withCloudinaryCredentials(async () => {
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+    client.seed('applications', 'app-1', application({
+      jobId: 'job-1',
+      employeeId: 'employee-1',
+      resume: RESUME_REFERENCE,
+    }));
+
+    const res = await employerApi.get('/applications/app-1/resume/download');
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.url.includes('/raw/download'), true);
+    assert.equal(res.body.url.includes('type=upload'), true);
+    assert.equal(res.body.url.includes('/image/'), false);
+  });
+});
+
+test('GET /applications/:id/resume/download denies an unrelated user', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+    client.seed('applications', 'app-1', application({
+      jobId: 'job-1',
+      employeeId: 'employee-1',
+      resume: RESUME_REFERENCE,
+    }));
+
+    const strangerApi = await client.authed('stranger-1');
+    const res = await strangerApi.get('/applications/app-1/resume/download');
+
+    assert.equal(res.status, 403);
+    // No resume detail leaks in the failure body.
+    assert.equal(JSON.stringify(res.body).includes('resume-abc123'), false);
+  });
+});
+
+test('GET /applications/:id/resume/download denies an employer who owns a different job', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+    client.seed('applications', 'app-1', application({
+      jobId: 'job-1',
+      employeeId: 'employee-1',
+      resume: RESUME_REFERENCE,
+    }));
+
+    const otherEmployerApi = await client.authed('employer-2');
+    const res = await otherEmployerApi.get('/applications/app-1/resume/download');
+
+    assert.equal(res.status, 403);
+  });
+});
+
+test('GET /applications/:id/resume/download ignores any client-supplied asset id', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+    client.seed('applications', 'app-1', application({
+      jobId: 'job-1',
+      employeeId: 'employee-1',
+      resume: RESUME_REFERENCE,
+    }));
+
+    // A caller naming a different public id is ignored: the signature is built
+    // from the reference the server stored, not from the request.
+    const res = await employeeApi.get(
+      '/applications/app-1/resume/download?publicId=resumes/attacker/evil.pdf'
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.url.includes(encodeURIComponent(RESUME_PUBLIC_ID)), true);
+    assert.equal(res.body.url.includes('attacker'), false);
+  });
+});
+
+test('GET /applications/:id/resume/download is 404 when the application has no resume', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+    client.seed('applications', 'app-1', application({ jobId: 'job-1', employeeId: 'employee-1' }));
+
+    const res = await employeeApi.get('/applications/app-1/resume/download');
+
+    assert.equal(res.status, 404);
+  });
+});
+
+test('GET /applications/:id/resume/download is 404 when the application does not exist', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+
+    const res = await employeeApi.get('/applications/missing/resume/download');
+
+    assert.equal(res.status, 404);
+  });
+});
+
+test('GET /applications/:id/resume/download is unavailable, not public, when Cloudinary is unconfigured', async () => {
+  const saved = {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    secret: process.env.CLOUDINARY_API_SECRET,
+  };
+
+  try {
+    delete process.env.CLOUDINARY_CLOUD_NAME;
+    delete process.env.CLOUDINARY_API_KEY;
+    delete process.env.CLOUDINARY_API_SECRET;
+
+    client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+    client.seed('applications', 'app-1', application({
+      jobId: 'job-1',
+      employeeId: 'employee-1',
+      resume: RESUME_REFERENCE,
+    }));
+
+    const res = await employeeApi.get('/applications/app-1/resume/download');
+
+    assert.equal(res.status, 503);
+    assert.match(res.body.message, /not configured/i);
+    // No URL of any kind is returned when signing is impossible.
+    assert.equal('url' in res.body, false);
+    assert.equal(/secret|api[_-]?key/i.test(res.body.message), false, 'the answer names no variable');
+  } finally {
+    // Assign undefined would coerce the env value to the string "undefined", so
+    // delete instead when the variable was not set before this test.
+    if (saved.cloudName === undefined) {
+      delete process.env.CLOUDINARY_CLOUD_NAME;
+    } else {
+      process.env.CLOUDINARY_CLOUD_NAME = saved.cloudName;
+    }
+    if (saved.apiKey === undefined) {
+      delete process.env.CLOUDINARY_API_KEY;
+    } else {
+      process.env.CLOUDINARY_API_KEY = saved.apiKey;
+    }
+    if (saved.secret === undefined) {
+      delete process.env.CLOUDINARY_API_SECRET;
+    } else {
+      process.env.CLOUDINARY_API_SECRET = saved.secret;
+    }
+  }
+});
+
+test('GET /applications/:id/resume/download requires authentication', async () => {
+  client.seed('jobs', 'job-1', job({ postedBy: 'employer-1' }));
+  client.seed('applications', 'app-1', application({
+    jobId: 'job-1',
+    employeeId: 'employee-1',
+    resume: RESUME_REFERENCE,
+  }));
+
+  const res = await client.get('/applications/app-1/resume/download');
+
+  assert.equal(res.status, 401);
+});
+
+// -------------------------------------- STAGE 12.13: resume verification on apply
+//
+// A resume reference an application carries must name a file the APPLICANT owns
+// and that Cloudinary actually holds. Ownership is a path rule -- the public id
+// must sit under `resumes/{employeeId}/` -- and existence is one admin API call.
+// These tests install deterministic credentials and stub that single admin call,
+// so no real cloud is contacted and no real credentials are needed. Nothing in
+// the request can name another user's asset on the way in.
+const cloudinaryConfig = require('../config/cloudinary');
+
+// Run `run` with fake credentials in place AND cloudinary.api.resource stubbed to
+// report exactly `foundPublicIds` as existing; every other id is a 404. The SDK
+// object is a shared singleton, so the stub is swapped on the same instance the
+// service imported and restored afterwards even if the body throws.
+async function withCloudinaryAssets(foundPublicIds, run) {
+  const original = cloudinaryConfig.cloudinary.api.resource;
+
+  cloudinaryConfig.cloudinary.api.resource = async (publicId) => {
+    if (foundPublicIds.includes(publicId)) {
+      return { public_id: publicId, resource_type: 'raw' };
+    }
+
+    const missing = new Error('Resource not found');
+    missing.http_code = 404;
+    throw missing;
+  };
+
+  try {
+    return await withCloudinaryCredentials(run);
+  } finally {
+    cloudinaryConfig.cloudinary.api.resource = original;
+  }
+}
+
+const OWNED_RESUME_ID = 'resumes/employee-1/resume-abc123';
+const OWNED_RESUME_REFERENCE = {
+  publicId: OWNED_RESUME_ID,
+  name: 'cv.pdf',
+  resourceType: 'raw',
+};
+
+// A job that requires a resume and nothing else, so a resume failure is isolated
+// from the cover-letter and portfolio rules.
+const RESUME_REQUIRED_JOB = {
+  applicationRequirements: { resume: 'required', coverLetter: 'not_needed', portfolio: 'not_needed' },
+};
+
+test('POST /applications/apply stores an owned resume that Cloudinary holds', async () => {
+  await withCloudinaryAssets([OWNED_RESUME_ID], async () => {
+    client.seed('jobs', 'job-1', job(RESUME_REQUIRED_JOB));
+
+    const res = await employeeApi.post('/applications/apply', {
+      body: {
+        jobId: 'job-1',
+        fullName: 'Test User',
+        message: 'I can do this',
+        resume: OWNED_RESUME_REFERENCE,
+      },
+    });
+
+    assert.equal(res.status, 200);
+    const stored = Object.values(client.readAll('applications'))[0];
+    assert.deepEqual(stored.resume, OWNED_RESUME_REFERENCE);
+  });
+});
+
+test('POST /applications/apply rejects a resume under another user\'s folder', async () => {
+  await withCloudinaryAssets(['resumes/victim/secret.pdf'], async () => {
+    client.seed('jobs', 'job-1', job(RESUME_REQUIRED_JOB));
+
+    const res = await employeeApi.post('/applications/apply', {
+      body: {
+        jobId: 'job-1',
+        fullName: 'Test User',
+        message: 'I can do this',
+        // Even though the stub reports this id as existing, it is under someone
+        // else's folder, so ownership fails before any existence check.
+        resume: { publicId: 'resumes/victim/secret.pdf', name: 'secret.pdf', resourceType: 'raw' },
+      },
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(res.body.message, 'Resume does not belong to you');
+    assert.deepEqual(Object.values(client.readAll('applications')), []);
+  });
+});
+
+test('POST /applications/apply rejects a `..` id that only passes the folder prefix', async () => {
+  await withCloudinaryAssets(['resumes/employee-1/../victim/secret.pdf'], async () => {
+    client.seed('jobs', 'job-1', job(RESUME_REQUIRED_JOB));
+
+    const res = await employeeApi.post('/applications/apply', {
+      body: {
+        jobId: 'job-1',
+        fullName: 'Test User',
+        message: 'I can do this',
+        // Starts with `resumes/employee-1/` but escapes it. The traversal guard
+        // must catch what the prefix test alone would let through.
+        resume: {
+          publicId: 'resumes/employee-1/../victim/secret.pdf',
+          name: 'secret.pdf',
+          resourceType: 'raw',
+        },
+      },
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(res.body.message, 'Resume does not belong to you');
+    assert.deepEqual(Object.values(client.readAll('applications')), []);
+  });
+});
+
+test('POST /applications/apply rejects an owned resume Cloudinary does not hold', async () => {
+  await withCloudinaryAssets([], async () => {
+    client.seed('jobs', 'job-1', job(RESUME_REQUIRED_JOB));
+
+    const res = await employeeApi.post('/applications/apply', {
+      body: {
+        jobId: 'job-1',
+        fullName: 'Test User',
+        message: 'I can do this',
+        resume: OWNED_RESUME_REFERENCE,
+      },
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(res.body.message, 'Resume file could not be found');
+    assert.deepEqual(Object.values(client.readAll('applications')), []);
+  });
+});
+
+test('POST /applications/apply never consults Cloudinary when no resume is supplied', async () => {
+  // The stub throws if it is reached, so a 200 proves the write-side verification
+  // is skipped entirely for the common apply with no resume -- no admin call, no
+  // credential requirement.
+  const original = cloudinaryConfig.cloudinary.api.resource;
+  cloudinaryConfig.cloudinary.api.resource = async () => {
+    throw new Error('verifyUploadedAsset must not be called without a resume');
+  };
+
+  try {
+    client.seed('jobs', 'job-1', job());
+
+    const res = await employeeApi.post('/applications/apply', {
+      body: { jobId: 'job-1', fullName: 'Test User', message: 'I can do this' },
+    });
+
+    assert.equal(res.status, 200);
+  } finally {
+    cloudinaryConfig.cloudinary.api.resource = original;
+  }
+});
+
+test('POST /applications/apply rejects a filled job', async () => {
+  client.seed('jobs', 'job-1', job({ status: 'filled' }));
+  const res = await employeeApi.post('/applications/apply', {
+    body: { jobId: 'job-1', fullName: 'Test User', message: 'I can do this' },
+  });
   assert.equal(res.status, 400);
-  assert.equal(res.body.message, 'Missing required fields');
-  assert.equal(Object.keys(client.readAll('tasks')).length, 0);
+  assert.equal(res.body.message, 'This job is filled and no longer accepts applications.');
+  assert.equal(Object.keys(client.readAll('applications')).length, 0,
+    'no application should be created for a filled job');
+});
+
+test('POST /applications/apply rejects a legacy Filled job', async () => {
+  client.seed('jobs', 'job-1', job({ status: 'Filled' }));
+  const res = await employeeApi.post('/applications/apply', {
+    body: { jobId: 'job-1', fullName: 'Test User', message: 'I can do this' },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.message, 'This job is filled and no longer accepts applications.');
+  assert.equal(Object.keys(client.readAll('applications')).length, 0,
+    'no application should be created for a Filled job');
+});
+
+test('POST /applications/apply rejects a closed job', async () => {
+  client.seed('jobs', 'job-1', job({ status: 'closed' }));
+  const res = await employeeApi.post('/applications/apply', {
+    body: { jobId: 'job-1', fullName: 'Test User', message: 'I can do this' },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.message, 'Applications for this job are closed.');
+  assert.equal(Object.keys(client.readAll('applications')).length, 0,
+    'no application should be created for a closed job');
+});
+
+test('POST /applications/apply rejects a legacy Closed job', async () => {
+  client.seed('jobs', 'job-1', job({ status: 'Closed' }));
+  const res = await employeeApi.post('/applications/apply', {
+    body: { jobId: 'job-1', fullName: 'Test User', message: 'I can do this' },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.message, 'Applications for this job are closed.');
+  assert.equal(Object.keys(client.readAll('applications')).length, 0,
+    'no application should be created for a Closed job');
+});
+
+test('POST /applications/apply rejects an expired deadline', async () => {
+  client.seed('jobs', 'job-1', job({ applicationDeadline: '2023-01-01' }));
+  const res = await employeeApi.post('/applications/apply', {
+    body: { jobId: 'job-1', fullName: 'Test User', message: 'I can do this' },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.message, 'The application deadline for this job has passed.');
+  assert.equal(Object.keys(client.readAll('applications')).length, 0,
+    'no application should be created when deadline has passed');
+});
+
+test('POST /applications/apply accepts a job with a future deadline', async () => {
+  const futureDeadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  await client.seed('jobs', 'job-1', job({ applicationDeadline: futureDeadline }));
+  const res = await employeeApi.post('/applications/apply', {
+    body: { jobId: 'job-1', fullName: 'Test User', message: 'I can do this' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.message, 'Application submitted successfully');
+  const apps = Object.keys(client.readAll('applications'));
+  assert.equal(apps.length, 1, 'application should be created');
+});
+
+test('POST /applications/apply succeeds when job deadline is null', async () => {
+  client.seed('jobs', 'job-1', job({ applicationDeadline: null }));
+  const res = await employeeApi.post('/applications/apply', {
+    body: { jobId: 'job-1', fullName: 'Test User', message: 'I can do this' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.message, 'Application submitted successfully');
+  const apps = Object.keys(client.readAll('applications'));
+  assert.equal(apps.length, 1, 'application should be created');
+});
+
+test('POST /applications/apply succeeds when job deadline is an invalid date string', async () => {
+  client.seed('jobs', 'job-1', job({ applicationDeadline: 'not-a-date' }));
+  const res = await employeeApi.post('/applications/apply', {
+    body: { jobId: 'job-1', fullName: 'Test User', message: 'I can do this' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.message, 'Application submitted successfully');
+  const apps = Object.keys(client.readAll('applications'));
+
+
 });

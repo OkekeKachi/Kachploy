@@ -10,6 +10,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { startTestServer } = require('../testing/testApp');
 const { user } = require('../testing/fixtures');
 const { timestampFrom } = require('../testing/fakeFirestore');
@@ -599,6 +600,60 @@ test('PUT /users/update/:uid ignores fields outside the allow-list', async () =>
   assert.equal(stored.companyName, 'Acme');
 });
 
+// ------------------------------------------------------------- savedJobs
+
+test('PUT /users/update/:uid persists an array of saved job ids', async () => {
+  client.seed('users', 'user-1', user({ uid: 'user-1' }));
+  const api = await client.authed('user-1');
+
+  const res = await api.put('/users/update/user-1', {
+    body: { savedJobs: ['job-1', 'job-2'] },
+  });
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(client.readDoc('users', 'user-1').savedJobs, ['job-1', 'job-2']);
+});
+
+test('PUT /users/update/:uid rejects invalid savedJobs input and writes nothing', async () => {
+  client.seed('users', 'user-1', user({ uid: 'user-1', savedJobs: ['job-keep'] }));
+  const api = await client.authed('user-1');
+
+  const invalidValues = [
+    'job-1',            // a bare string is not an array
+    { 0: 'job-1' },     // an object is not an array
+    [123],              // every element must be a string
+    ['job-1', ''],      // blank ids are rejected
+    ['job-1', '   '],   // whitespace-only ids are rejected
+    [null],
+    [{}],
+  ];
+
+  for (const savedJobs of invalidValues) {
+    const res = await api.put('/users/update/user-1', { body: { savedJobs } });
+
+    assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(savedJobs)}`);
+    assert.equal(res.body.message, 'savedJobs must be an array of non-empty string job IDs');
+  }
+
+  // A rejected request must not touch the stored list.
+  assert.deepEqual(client.readDoc('users', 'user-1').savedJobs, ['job-keep']);
+});
+
+test('PUT /users/update/:uid cannot modify another user\'s savedJobs', async () => {
+  client.seed('users', 'user-a', user({ uid: 'user-a', savedJobs: ['job-1'] }));
+  client.seed('users', 'user-b', user({ uid: 'user-b', savedJobs: ['job-2', 'job-3'] }));
+  const attacker = await client.authed('user-a');
+
+  const res = await attacker.put('/users/update/user-b', {
+    body: { savedJobs: ['job-9'] },
+  });
+
+  assert.equal(res.status, 403);
+  // User B's saved jobs are unchanged, and the attacker's own list is untouched.
+  assert.deepEqual(client.readDoc('users', 'user-b').savedJobs, ['job-2', 'job-3']);
+  assert.deepEqual(client.readDoc('users', 'user-a').savedJobs, ['job-1']);
+});
+
 test('PUT /users/update/:uid writes profilePic to Firebase Auth and Firestore', async () => {
   // STAGE 6N. This test used to be called "...routes profilePic to Firebase Auth
   // only" and asserted `readDoc(...).profilePic === undefined`, which was pinning
@@ -609,12 +664,12 @@ test('PUT /users/update/:uid writes profilePic to Firebase Auth and Firestore', 
   client.seed('users', 'user-1', user());
 
   await client.put('/users/update/user-1', {
-    body: { profilePic: 'https://example.test/p.png', fullName: 'A' },
+    body: { profilePic: 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/user-1/p.png', fullName: 'A' },
     token,
   });
 
-  assert.equal(client.fake.auth.users.get('user-1').photoURL, 'https://example.test/p.png');
-  assert.equal(client.readDoc('users', 'user-1').profilePic, 'https://example.test/p.png');
+  assert.equal(client.fake.auth.users.get('user-1').photoURL, 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/user-1/p.png');
+  assert.equal(client.readDoc('users', 'user-1').profilePic, 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/user-1/p.png');
 });
 
 test('a profilePic update is readable by another user through the public projection', async () => {
@@ -625,13 +680,13 @@ test('a profilePic update is readable by another user through the public project
   client.seed('users', 'employee-1', user({ uid: 'employee-1' }));
 
   const put = await owner.put('/users/update/employee-1', {
-    body: { profilePic: 'https://example.test/avatar.png' },
+    body: { profilePic: 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/employee-1/avatar.png' },
   });
   assert.equal(put.status, 200);
 
   const res = await viewer.get('/users/getUser/employee-1');
   assert.equal(res.status, 200);
-  assert.equal(res.body.user.profilePic, 'https://example.test/avatar.png');
+  assert.equal(res.body.user.profilePic, 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/employee-1/avatar.png');
 });
 
 test('a profile update without profilePic leaves the stored profilePic untouched', async () => {
@@ -640,14 +695,14 @@ test('a profile update without profilePic leaves the stored profilePic untouched
   const api = await client.authed('user-1');
   client.seed('users', 'user-1', user({ uid: 'user-1' }));
 
-  await api.put('/users/update/user-1', { body: { profilePic: 'https://example.test/keep.png' } });
+  await api.put('/users/update/user-1', { body: { profilePic: 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/user-1/keep.png' } });
 
   const res = await api.put('/users/update/user-1', { body: { fullName: 'Renamed' } });
 
   assert.equal(res.status, 200);
   const stored = client.readDoc('users', 'user-1');
   assert.equal(stored.fullName, 'Renamed');
-  assert.equal(stored.profilePic, 'https://example.test/keep.png');
+  assert.equal(stored.profilePic, 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/user-1/keep.png');
 });
 
 test('a user cannot set another user\'s profilePic', async () => {
@@ -658,7 +713,7 @@ test('a user cannot set another user\'s profilePic', async () => {
   const attacker = await client.authed('attacker');
 
   const res = await attacker.put('/users/update/victim', {
-    body: { profilePic: 'https://example.test/owned.png' },
+    body: { profilePic: 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/attacker/owned.png' },
   });
 
   assert.equal(res.status, 403);
@@ -676,7 +731,7 @@ test('PUT /users/update/:uid returns 500 when profilePic has no Auth user', asyn
   client.seed('users', 'ghost-uid', user({ uid: 'ghost-uid' }));
 
   const res = await client.put('/users/update/ghost-uid', {
-    body: { profilePic: 'https://example.test/p.png' },
+    body: { profilePic: 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/ghost-uid/p.png' },
     token,
   });
 
@@ -684,4 +739,702 @@ test('PUT /users/update/:uid returns 500 when profilePic has no Auth user', asyn
   // updateUser throws and the whole request 500s before Firestore is written.
   assert.equal(res.status, 500);
   assert.equal(res.body.message, 'Internal Server Error');
+});
+
+// ---------------------------------------- profile-photo upload signing
+//
+// The browser does not upload a profile photo THROUGH this API: it asks for a
+// signature for one upload and sends the bytes to Cloudinary itself. These tests
+// cover the rule that matters -- the signature is minted for the caller's own
+// folder and nothing else -- and that the api secret never travels.
+
+test('a user gets a signature for their own profile-photo folder', async () => {
+  await withCloudinaryCredentials(async () => {
+    const api = await client.authed('user-1');
+
+    const res = await api.post('/users/profile-photo/signature', { body: {} });
+
+    assert.equal(res.status, 200);
+
+    const signed = res.body;
+    assert.equal(signed.cloudName, process.env.CLOUDINARY_CLOUD_NAME);
+    assert.equal(signed.apiKey, process.env.CLOUDINARY_API_KEY);
+    assert.equal(signed.resourceType, 'image');
+    assert.equal(signed.folder, 'profilePics/user-1');
+    assert.equal(signed.allowedFormats, 'jpg,jpeg,png,webp');
+    // The signed `public_id` is the name under that folder; `{timestamp}-{12 hex}`
+    // is asserted as a pattern rather than a value.
+    assert.match(signed.publicId, /^\d+-[0-9a-f]{12}$/);
+    assert.equal(typeof signed.timestamp, 'number');
+
+    // The signature covers the signed parameters exactly as the browser sends them,
+    // recomputed here so the test pins the algorithm rather than one output.
+    const expected = crypto
+      .createHash('sha1')
+      .update(
+        `allowed_formats=${signed.allowedFormats}&folder=${signed.folder}&public_id=${signed.publicId}&timestamp=${signed.timestamp}${process.env.CLOUDINARY_API_SECRET}`
+      )
+      .digest('hex');
+    assert.equal(signed.signature, expected);
+
+    // The secret itself never travels.
+    assert.equal(JSON.stringify(res.body).includes(process.env.CLOUDINARY_API_SECRET), false);
+    assert.equal('apiSecret' in signed, false);
+  });
+});
+
+test('the signed folder comes from the caller, never from the request', async () => {
+  await withCloudinaryCredentials(async () => {
+    const api = await client.authed('victim');
+
+    // Whatever the client sends is ignored: the folder is built from the verified
+    // token, so there is no field it could set to sign an upload into another
+    // account's profilePics folder.
+    const res = await api.post('/users/profile-photo/signature', {
+      body: { folder: 'profilePics/attacker', publicId: 'evil', resourceType: 'raw' },
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.folder, 'profilePics/victim');
+    assert.equal(res.body.resourceType, 'image');
+    assert.notEqual(res.body.publicId, 'evil');
+  });
+});
+
+test('each profile-photo signature request mints a fresh public id', async () => {
+  await withCloudinaryCredentials(async () => {
+    const api = await client.authed('user-1');
+
+    const first = await api.post('/users/profile-photo/signature', { body: {} });
+    const second = await api.post('/users/profile-photo/signature', { body: {} });
+
+    assert.notEqual(first.body.publicId, second.body.publicId);
+  });
+});
+
+test('profile-photo signing is unavailable, not broken, when Cloudinary is not configured', async () => {
+  const saved = {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    secret: process.env.CLOUDINARY_API_SECRET,
+  };
+
+  try {
+    delete process.env.CLOUDINARY_CLOUD_NAME;
+    delete process.env.CLOUDINARY_API_KEY;
+    delete process.env.CLOUDINARY_API_SECRET;
+
+    const res = await (await client.authed('user-1')).post('/users/profile-photo/signature', {
+      body: {},
+    });
+
+    assert.equal(res.status, 503);
+    assert.match(res.body.message, /not configured/i);
+    assert.equal(/secret|api[_-]?key/i.test(res.body.message), false, 'the answer names no variable');
+  } finally {
+    if (saved.cloudName === undefined) {
+      delete process.env.CLOUDINARY_CLOUD_NAME;
+    } else {
+      process.env.CLOUDINARY_CLOUD_NAME = saved.cloudName;
+    }
+    if (saved.apiKey === undefined) {
+      delete process.env.CLOUDINARY_API_KEY;
+    } else {
+      process.env.CLOUDINARY_API_KEY = saved.apiKey;
+    }
+    if (saved.secret === undefined) {
+      delete process.env.CLOUDINARY_API_SECRET;
+    } else {
+      process.env.CLOUDINARY_API_SECRET = saved.secret;
+    }
+  }
+});
+
+// ---------------------------------------------- resume download signing (12.12.1)
+//
+// A resume is stored on the profile as a private reference
+// ({ publicId, name, resourceType }) and is only reachable through this endpoint,
+// which mints a short-lived signed URL. As on the application side, the reference
+// is read from the caller's own trusted record and never from the request, so no
+// caller may name an asset. The signature is computed locally by the Cloudinary
+// SDK, so these tests install deterministic credentials and never contact the
+// cloud or need real ones.
+
+const PROFILE_RESUME_PUBLIC_ID = 'resumes/user-1/resume-abc123';
+const PROFILE_RESUME_REFERENCE = {
+  publicId: PROFILE_RESUME_PUBLIC_ID,
+  name: 'cv.pdf',
+  resourceType: 'raw',
+};
+
+// Install deterministic Cloudinary credentials for one test and restore whatever
+// the environment held before. Mirrors the profile-photo signing tests above.
+async function withCloudinaryCredentials(run) {
+  const saved = {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    secret: process.env.CLOUDINARY_API_SECRET,
+  };
+
+  process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud';
+  process.env.CLOUDINARY_API_KEY = 'test-key';
+  process.env.CLOUDINARY_API_SECRET = 'test-secret';
+
+  try {
+    return await run();
+  } finally {
+    restoreEnv('CLOUDINARY_CLOUD_NAME', saved.cloudName);
+    restoreEnv('CLOUDINARY_API_KEY', saved.apiKey);
+    restoreEnv('CLOUDINARY_API_SECRET', saved.secret);
+  }
+}
+
+// Assigning `undefined` to process.env coerces it to the string "undefined", so a
+// variable that was absent before a test must be deleted, not reassigned.
+function restoreEnv(name, value) {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
+test('GET /users/resume/download returns a signed URL for the caller\'s own resume', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('users', 'user-1', user({ uid: 'user-1', resume: PROFILE_RESUME_REFERENCE }));
+    const api = await client.authed('user-1');
+
+    const res = await api.get('/users/resume/download');
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.name, 'cv.pdf');
+    assert.equal(typeof res.body.url, 'string');
+    assert.match(res.body.url, /^https:\/\//);
+    // The URL points at the stored public id, URL-encoded, and never exposes the
+    // api secret.
+    assert.equal(res.body.url.includes(encodeURIComponent(PROFILE_RESUME_PUBLIC_ID)), true);
+    assert.equal(res.body.url.includes('test-secret'), false);
+  });
+});
+
+test('GET /users/resume/download signs in the raw namespace, not image', async () => {
+  // REGRESSION. A resume is uploaded as the `raw` resource type. The Cloudinary
+  // SDK's private_download_url builds its URL through api_url, which defaults
+  // resource_type to `image` when none is supplied. Asking the image namespace for
+  // a raw asset is answered with "Resource not found" even though the file exists,
+  // so the signed URL must address `/raw/download`. This pins the mismatch that
+  // made every stored resume 404 on download.
+  await withCloudinaryCredentials(async () => {
+    client.seed('users', 'user-1', user({ uid: 'user-1', resume: PROFILE_RESUME_REFERENCE }));
+    const api = await client.authed('user-1');
+
+    const res = await api.get('/users/resume/download');
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.url.includes('/raw/download'), true);
+    assert.equal(res.body.url.includes('/image/'), false);
+  });
+});
+
+test('GET /users/resume/download signs only the caller\'s own resume', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('users', 'victim', user({
+      uid: 'victim',
+      resume: { publicId: 'resumes/victim/secret.pdf', name: 'secret.pdf', resourceType: 'raw' },
+    }));
+    client.seed('users', 'attacker', user({ uid: 'attacker' }));
+    const attacker = await client.authed('attacker');
+
+    // The caller has no resume of their own, so naming the victim's asset in the
+    // query changes nothing: the read is scoped to the caller's own record.
+    const res = await attacker.get('/users/resume/download?publicId=resumes/victim/secret.pdf');
+
+    assert.equal(res.status, 404);
+    assert.equal(JSON.stringify(res.body).includes('victim'), false);
+  });
+});
+
+test('GET /users/resume/download is 404 when the profile has no resume', async () => {
+  await withCloudinaryCredentials(async () => {
+    client.seed('users', 'user-1', user({ uid: 'user-1' }));
+    const api = await client.authed('user-1');
+
+    const res = await api.get('/users/resume/download');
+
+    assert.equal(res.status, 404);
+    assert.equal('url' in res.body, false);
+  });
+});
+
+test('GET /users/resume/download is unavailable, not public, when Cloudinary is unconfigured', async () => {
+  const saved = {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    secret: process.env.CLOUDINARY_API_SECRET,
+  };
+
+  try {
+    delete process.env.CLOUDINARY_CLOUD_NAME;
+    delete process.env.CLOUDINARY_API_KEY;
+    delete process.env.CLOUDINARY_API_SECRET;
+
+    client.seed('users', 'user-1', user({ uid: 'user-1', resume: PROFILE_RESUME_REFERENCE }));
+    const api = await client.authed('user-1');
+
+    const res = await api.get('/users/resume/download');
+
+    assert.equal(res.status, 503);
+    assert.match(res.body.message, /not configured/i);
+    // No URL of any kind is returned when signing is impossible.
+    assert.equal('url' in res.body, false);
+    assert.equal(/secret|api[_-]?key/i.test(res.body.message), false, 'the answer names no variable');
+  } finally {
+    if (saved.cloudName === undefined) {
+      delete process.env.CLOUDINARY_CLOUD_NAME;
+    } else {
+      process.env.CLOUDINARY_CLOUD_NAME = saved.cloudName;
+    }
+    if (saved.apiKey === undefined) {
+      delete process.env.CLOUDINARY_API_KEY;
+    } else {
+      process.env.CLOUDINARY_API_KEY = saved.apiKey;
+    }
+    if (saved.secret === undefined) {
+      delete process.env.CLOUDINARY_API_SECRET;
+    } else {
+      process.env.CLOUDINARY_API_SECRET = saved.secret;
+    }
+  }
+});
+
+// ---------------------------------- STAGE 12.13: resume verification on save
+//
+// The same write-side rule the application side enforces, applied to the resume
+// a profile stores: the reference must name a file under the caller's own
+// `resumes/{uid}/` folder AND that file must exist in Cloudinary, checked with
+// one admin API call that these tests stub. No real cloud or credentials needed.
+const cloudinaryConfig = require('../config/cloudinary');
+
+// Run `run` with fake credentials in place AND cloudinary.api.resource stubbed to
+// report exactly `foundPublicIds` as existing; every other id is a 404. The SDK
+// object is a shared singleton, so the stub is swapped on the same instance the
+// service imported and restored afterwards even if the body throws.
+async function withCloudinaryAssets(foundPublicIds, run) {
+  const original = cloudinaryConfig.cloudinary.api.resource;
+
+  cloudinaryConfig.cloudinary.api.resource = async (publicId) => {
+    if (foundPublicIds.includes(publicId)) {
+      return { public_id: publicId, resource_type: 'raw' };
+    }
+
+    const missing = new Error('Resource not found');
+    missing.http_code = 404;
+    throw missing;
+  };
+
+  try {
+    return await withCloudinaryCredentials(run);
+  } finally {
+    cloudinaryConfig.cloudinary.api.resource = original;
+  }
+}
+
+test('PUT /users/update/:uid stores an owned resume that Cloudinary holds', async () => {
+  await withCloudinaryAssets([PROFILE_RESUME_PUBLIC_ID], async () => {
+    client.seed('users', 'user-1', user({ uid: 'user-1' }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', {
+      body: { resume: PROFILE_RESUME_REFERENCE },
+    });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(client.readDoc('users', 'user-1').resume, PROFILE_RESUME_REFERENCE);
+  });
+});
+
+test('PUT /users/update/:uid rejects a resume under another user\'s folder', async () => {
+  await withCloudinaryAssets(['resumes/victim/secret.pdf'], async () => {
+    client.seed('users', 'user-1', user({ uid: 'user-1' }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', {
+      body: { resume: { publicId: 'resumes/victim/secret.pdf', name: 'secret.pdf', resourceType: 'raw' } },
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(res.body.message, 'Resume does not belong to you');
+    // The profile was not written.
+    assert.equal('resume' in client.readDoc('users', 'user-1'), false);
+  });
+});
+
+test('PUT /users/update/:uid rejects an owned resume Cloudinary does not hold', async () => {
+  await withCloudinaryAssets([], async () => {
+    client.seed('users', 'user-1', user({ uid: 'user-1' }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', {
+      body: { resume: PROFILE_RESUME_REFERENCE },
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(res.body.message, 'Resume file could not be found');
+    assert.equal('resume' in client.readDoc('users', 'user-1'), false);
+  });
+});
+
+test('PUT /users/update/:uid never consults Cloudinary for a profile update without a resume', async () => {
+  // The stub throws if reached, so a 200 proves an ordinary profile edit makes no
+  // admin call. Credentials are also left absent, which would independently 500
+  // if the verification were entered.
+  const original = cloudinaryConfig.cloudinary.api.resource;
+  cloudinaryConfig.cloudinary.api.resource = async () => {
+    throw new Error('verifyUploadedAsset must not be called without a resume');
+  };
+
+  try {
+    client.seed('users', 'user-1', user({ uid: 'user-1' }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', { body: { fullName: 'Renamed' } });
+
+    assert.equal(res.status, 200);
+  } finally {
+    cloudinaryConfig.cloudinary.api.resource = original;
+  }
+});
+
+// ------------------------------ STAGE 12.14: deleting a replaced profile photo
+//
+// When a user replaces their profile picture, the previous Cloudinary asset is
+// deleted AFTER the profile update has succeeded -- never before, and never when
+// no new photo was supplied. These tests stub cloudinary.uploader.destroy, the
+// shared singleton the service calls through, and record every delete, so no test
+// contacts the cloud or needs real credentials.
+
+const PHOTO_PUBLIC_ID = 'profilePics/user-1/111-aaa';
+const PHOTO_URL = 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/user-1/111-aaa.png';
+const NEXT_PHOTO_PUBLIC_ID = 'profilePics/user-1/222-bbb';
+const NEXT_PHOTO_URL = 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/user-1/222-bbb.png';
+
+// Run `run(deleted)` with fake Cloudinary credentials and uploader.destroy stubbed,
+// recording each deleted public id in order. `onDestroy` may throw to model a
+// Cloudinary failure. The SDK is a shared singleton, so the original is restored
+// afterwards even if the body throws.
+async function withDeletedAssets(run, { onDestroy } = {}) {
+  const original = cloudinaryConfig.cloudinary.uploader.destroy;
+  const deleted = [];
+
+  cloudinaryConfig.cloudinary.uploader.destroy = async (publicId) => {
+    deleted.push(publicId);
+    if (onDestroy) return onDestroy(publicId);
+    return { result: 'ok' };
+  };
+
+  try {
+    return await withCloudinaryCredentials(() => run(deleted));
+  } finally {
+    cloudinaryConfig.cloudinary.uploader.destroy = original;
+  }
+}
+
+test('replacing a profile photo deletes the previous Cloudinary asset', async () => {
+  await withDeletedAssets(async (deleted) => {
+    client.seed('users', 'user-1', user({
+      uid: 'user-1',
+      profilePic: PHOTO_URL,
+      profilePicPublicId: PHOTO_PUBLIC_ID,
+    }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', {
+      body: { profilePic: NEXT_PHOTO_URL, profilePicPublicId: NEXT_PHOTO_PUBLIC_ID },
+    });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(deleted, [PHOTO_PUBLIC_ID]);
+
+    const stored = client.readDoc('users', 'user-1');
+    assert.equal(stored.profilePic, NEXT_PHOTO_URL);
+    assert.equal(stored.profilePicPublicId, NEXT_PHOTO_PUBLIC_ID);
+  });
+});
+
+test('a legacy profile photo with no stored public id is derived from its URL and deleted', async () => {
+  await withDeletedAssets(async (deleted) => {
+    client.seed('users', 'user-1', user({ uid: 'user-1', profilePic: PHOTO_URL }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', {
+      body: { profilePic: NEXT_PHOTO_URL, profilePicPublicId: NEXT_PHOTO_PUBLIC_ID },
+    });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(deleted, [PHOTO_PUBLIC_ID]);
+  });
+});
+
+test('a profile update without a new photo never deletes the stored one', async () => {
+  await withDeletedAssets(async (deleted) => {
+    client.seed('users', 'user-1', user({
+      uid: 'user-1',
+      profilePic: PHOTO_URL,
+      profilePicPublicId: PHOTO_PUBLIC_ID,
+    }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', { body: { fullName: 'Renamed' } });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(deleted, []);
+    assert.equal(client.readDoc('users', 'user-1').profilePic, PHOTO_URL);
+  });
+});
+
+test('a failed profile update preserves the previous photo', async () => {
+  // The Auth user is missing, so the Auth write throws before Firestore is touched
+  // and before any cleanup is attempted: the old asset must survive.
+  // The new photo URL and public id must live under the caller's own
+  // profilePics/ghost-uid/ folder (M2 validation), so they pass the profile-photo
+  // ownership check and the flow reaches the Auth write, which then fails.
+  await withDeletedAssets(async (deleted) => {
+    client.seed('users', 'ghost-uid', user({
+      uid: 'ghost-uid',
+      profilePic: 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/ghost-uid/old.png',
+      profilePicPublicId: 'profilePics/ghost-uid/old',
+    }));
+    const token = client.token('ghost-uid');
+
+    const res = await client.put('/users/update/ghost-uid', {
+      body: {
+        profilePic: 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/ghost-uid/new.png',
+        profilePicPublicId: 'profilePics/ghost-uid/new',
+      },
+      token,
+    });
+
+    assert.equal(res.status, 500);
+    assert.deepEqual(deleted, []);
+  });
+});
+
+test('a failed Cloudinary delete leaves the profile update successful', async () => {
+  const originalError = console.error;
+  console.error = () => {};
+
+  try {
+    await withDeletedAssets(
+      async (deleted) => {
+        client.seed('users', 'user-1', user({
+          uid: 'user-1',
+          profilePic: PHOTO_URL,
+          profilePicPublicId: PHOTO_PUBLIC_ID,
+        }));
+        const api = await client.authed('user-1');
+
+        const res = await api.put('/users/update/user-1', {
+          body: { profilePic: NEXT_PHOTO_URL, profilePicPublicId: NEXT_PHOTO_PUBLIC_ID },
+        });
+
+        assert.equal(res.status, 200);
+        assert.deepEqual(deleted, [PHOTO_PUBLIC_ID]);
+        assert.equal(client.readDoc('users', 'user-1').profilePic, NEXT_PHOTO_URL);
+      },
+      { onDestroy: () => { throw new Error('cloudinary exploded'); } }
+    );
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test('re-saving the same photo deletes nothing', async () => {
+  await withDeletedAssets(async (deleted) => {
+    client.seed('users', 'user-1', user({
+      uid: 'user-1',
+      profilePic: PHOTO_URL,
+      profilePicPublicId: PHOTO_PUBLIC_ID,
+    }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', {
+      body: { profilePic: PHOTO_URL, profilePicPublicId: PHOTO_PUBLIC_ID },
+    });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(deleted, []);
+  });
+});
+
+test('a previous photo outside the caller\'s own folder is never deleted', async () => {
+  // A tampered or legacy document names another user's asset. The folder guard
+  // refuses to delete it even though it is the stored value.
+  await withDeletedAssets(async (deleted) => {
+    client.seed('users', 'user-1', user({
+      uid: 'user-1',
+      profilePic: 'https://res.cloudinary.com/test-cloud/image/upload/profilePics/user-2/evil.png',
+      profilePicPublicId: 'profilePics/user-2/evil',
+    }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', {
+      body: { profilePic: NEXT_PHOTO_URL, profilePicPublicId: NEXT_PHOTO_PUBLIC_ID },
+    });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(deleted, []);
+  });
+});
+
+test('a non-Cloudinary previous photo is left alone', async () => {
+  await withDeletedAssets(async (deleted) => {
+    client.seed('users', 'user-1', user({ uid: 'user-1', profilePic: 'https://example.test/p.png' }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', {
+      body: { profilePic: NEXT_PHOTO_URL, profilePicPublicId: NEXT_PHOTO_PUBLIC_ID },
+    });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(deleted, []);
+  });
+});
+
+test('a public id outside the caller\'s folder is not stored', async () => {
+  await withDeletedAssets(async (deleted) => {
+    client.seed('users', 'user-1', user({ uid: 'user-1' }));
+    const api = await client.authed('user-1');
+
+    const res = await api.put('/users/update/user-1', {
+      body: { profilePic: PHOTO_URL, profilePicPublicId: 'profilePics/user-2/steal' },
+    });
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(deleted, []);
+  });
+});
+
+// ------------------------------------------------------------ auth regression
+
+test('LOGIN → PROFILE: self-read returns user data after sign-in', async () => {
+  // This test pins the login → dashboard → profile retrieval flow.
+  // It verifies that after a successful sign-in, the self-read
+  // /users/getUser/:uid returns the user's full profile.
+  const token = await client.signUp('user-1', { email: 'user@example.test' });
+  client.seed('users', 'user-1', user({
+    uid: 'user-1',
+    fullName: 'Test User',
+    email: 'user@example.test',
+    role: 'employee',
+  }));
+
+  // Simulate the login flow: sign in, then retrieve profile
+  const api = await client.authed('user-1');
+  const res = await api.get('/users/getUser/user-1');
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.user.fullName, 'Test User');
+  assert.equal(res.body.user.email, 'user@example.test');
+  assert.equal(res.body.user.role, 'employee');
+  assert.equal(res.body.user.uid, 'user-1');
+});
+
+test('LOGIN → PROFILE: auth header with ID token is required', async () => {
+  // Verifies that /users/getUser/:uid returns 401 when no auth header is sent.
+  client.seed('users', 'user-1', user({ uid: 'user-1' }));
+
+  const res = await client.get('/users/getUser/user-1');
+  assert.equal(res.status, 401);
+});
+
+test('LOGIN → PROFILE: missing/invalid token returns 401', async () => {
+  // Tests that both missing token and garbage token produce 401.
+  client.seed('users', 'user-1', user({ uid: 'user-1' }));
+
+  const res1 = await client.get('/users/getUser/user-1');
+  assert.equal(res1.status, 401, 'missing token must return 401');
+
+  const res2 = await client.get('/users/getUser/user-1', {
+    token: 'invalid- garbage-token',
+  });
+  assert.equal(res2.status, 401, 'invalid token must return 401');
+});
+
+test('LOGIN → PROFILE: UID mismatch cross-user read returns 200 with public fields', async () => {
+  // Cross-user GET /users/getUser/:userId is allowed (for JobSplitView), but
+  // private fields (email, phone, role, address, companyName, skills, uid) are
+  // withheld. fullName IS exposed because it is in PUBLIC_PROFILE_FIELDS.
+  // This matches the Stage 5C contract and the existing security test at line 458.
+  client.seed('users', 'user-1', user({ uid: 'user-1', fullName: 'User One' }));
+  client.seed('users', 'user-2', user({ uid: 'user-2', fullName: 'User Two' }));
+
+  // Sign in as user-1, then request user-2's profile (cross-user read)
+  const api = await client.authed('user-1');
+  const res = await api.get('/users/getUser/user-2');
+
+  // Cross-user read is permitted; status 200
+  assert.equal(res.status, 200);
+  // Private fields are withheld
+  for (const field of ['email', 'phone', 'role', 'address', 'companyName', 'skills', 'uid']) {
+    assert.equal(res.body.user[field], undefined, `${field} must not be readable cross-user`);
+  }
+  // fullName IS exposed (it is in PUBLIC_PROFILE_FIELDS)
+  assert.equal(res.body.user.fullName, 'User Two', 'fullName is a public field and is exposed cross-user');
+  const payload = JSON.stringify(res.body);
+  // Private data must not leak
+  for (const leaked of ['user-2', '+2348012345678', 'user@example.test']) {
+    assert.equal(payload.includes(leaked), false, `cross-user payload must not contain ${leaked}`);
+  }
+  // fullName leaking is expected per the contract
+  assert.equal(payload.includes('User Two'), true, 'fullName is expected cross-user');
+});
+
+test('LOGIN → PROFILE: profile retrieval success after auth init', async () => {
+  // Verifies that profile retrieval succeeds when auth is fully initialized.
+  const token = await client.signUp('user-1', { email: 'user@example.test' });
+  client.seed('users', 'user-1', user({
+    uid: 'user-1',
+    fullName: 'Test User',
+    email: 'user@example.test',
+    role: 'employee',
+    profileComplete: true,
+  }));
+
+  const api = await client.authed('user-1');
+  const res = await api.get('/users/getUser/user-1');
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.user.fullName, 'Test User');
+  assert.equal(res.body.user.profileComplete, true);
+});
+
+test('DASHBOARD after failed query: 401 without auth token', async () => {
+  // Verifies that /users/getUser/:uid returns 401 when no auth header is sent.
+  // This pins the bug where useUserQuery fired before the token interceptor
+  // set the Authorization header, resulting in 401 Unauthorized.
+  client.seed('users', 'user-1', user({ uid: 'user-1' }));
+
+  // Make an unauthenticated request (no Bearer token)
+  const res = await client.request('GET', '/users/getUser/user-1');
+  assert.equal(res.status, 401);
+});
+
+test('AUTH INITIALIZATION before profile query', async () => {
+  // Ensures the user query is not issued before Firebase auth initialization
+  // completes. This pins the bug where useUserQuery fired before the token
+  // interceptor set the Authorization header.
+  const token = await client.signUp('user-1', { email: 'user@example.test' });
+  client.seed('users', 'user-1', user({
+    uid: 'user-1',
+    fullName: 'Test User',
+    email: 'user@example.test',
+    role: 'employee',
+  }));
+
+  // Self-read with valid token must succeed
+  const api = await client.authed('user-1');
+  const res = await api.get('/users/getUser/user-1');
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.user.fullName, 'Test User');
 });

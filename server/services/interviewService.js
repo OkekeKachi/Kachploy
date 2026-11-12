@@ -8,6 +8,8 @@
 //   * createInterview -- the create, reachable from POST /interviews
 //   * updateInterview -- the partial update behind PUT /interviews/:interviewId,
 //     which is how every status change (completed / cancelled / no_show) is made
+//   * respondToInterview -- the applicant's accept/decline behind
+//     PUT /interviews/:interviewId/response (Stage 10A)
 //   * listInterviewsForJob / listInterviewsForApplication -- the two reads
 //
 // WHAT DELIBERATELY DOES NOT EXIST YET
@@ -16,6 +18,9 @@
 //     interview leaves the application exactly as pending as it was. The
 //     recruitment lifecycle is not modelled on the application in this stage; the
 //     interview is a separate fact about the application, not a new state of it.
+//     STAGE 10A keeps that: an applicant's answer to an interview is a fact about
+//     the interview, and answering it writes no application status either. Accepting
+//     an interview is not being hired, and declining one is not being rejected.
 //   * No employment. An interview never creates an Employment record. Employment
 //     remains created in exactly one place -- the hire, i.e.
 //     applicationService.updateApplicationStatus with `accepted` -- so no matter how
@@ -33,10 +38,11 @@
 //     -- is Stage 7A's documented, unchanged gap.)
 //
 // AUTHORIZATION: as with employmentService, the service performs no ownership check
-// of its own. The three Stage 7C guards in middleware/auth.js answer "may this
-// caller do this?" before any function here runs; this file answers "is this data
-// valid?". Keeping the two apart is what lets the same createInterview be reached
-// from a route today and from a future orchestration without re-deciding identity.
+// of its own. The Stage 7C guards in middleware/auth.js -- plus Stage 10A's
+// requireInterviewRespondent -- answer "may this caller do this?" before any function
+// here runs; this file answers "is this data valid?". Keeping the two apart is what
+// lets the same createInterview be reached from a route today and from a future
+// orchestration without re-deciding identity.
 
 const { admin } = require('../config/firebase');
 const applicationRepository = require('../repositories/applicationRepository');
@@ -105,6 +111,49 @@ const INTERVIEW_STATUSES = ['scheduled', 'completed', 'cancelled', 'no_show'];
 const SCHEDULED_INTERVIEW_STATUS = 'scheduled';
 
 /**
+ * STAGE 10A. The two answers an applicant may give to an interview.
+ *
+ * An allow-list, for the same reason INTERVIEW_TYPES and INTERVIEW_STATUSES are
+ * allow-lists: without one, `interviewService` stores whatever string a client sent
+ * and nothing reads it. `pending` is deliberately NOT in this list -- it is what an
+ * unanswered interview *means*, not a value anybody writes. The field is simply absent
+ * from the document until an answer is given, exactly as the optional fields on create
+ * are, so "has not answered" is represented by the absence of the key rather than by a
+ * third value. The clients derive the `pending` label from that absence.
+ *
+ * `accepted` and `declined` describe the applicant's answer to the invitation only. They
+ * are deliberately NOT application statuses: an applicant who accepts an interview has
+ * not been hired, and one who declines has not been rejected. Nothing in this file
+ * writes to the applications collection.
+ */
+const INTERVIEW_RESPONSES = ['accepted', 'declined'];
+
+/**
+ * STAGE 10A. The statuses an interview may still be answered in.
+ *
+ * `scheduled` is the only one, which is the whole actionability rule. An interview the
+ * employer has already completed, cancelled or marked a no-show is a finished fact
+ * about a conversation that did or did not happen, and re-recording an answer onto it
+ * would contradict the record rather than update it.
+ *
+ * This is a *narrowing* of INTERVIEW_STATUSES, and it is deliberately narrower than
+ * that list is checked. INTERVIEW_STATUSES says which values may be written; it is an
+ * allow-list and not a transition matrix, so an employer may legally write `scheduled`
+ * back onto a completed interview as a correction. An applicant's answer does not get
+ * the same freedom, because an answer is about the applicant's own availability for a
+ * meeting: letting them answer an interview the employer has already cancelled would
+ * store "accepted" against something that is not going to happen. Correcting that is
+ * the employer's existing status control, exactly as it was before this field existed.
+ *
+ * Note this is a *status* rule and not a response rule: it says nothing about whether
+ * the interview is still in the future. Whether to answer is recorded here as the
+ * employer left it, so `scheduled` is answerable even if the time has passed -- the
+ * same reasoning isScheduledInstant records for not holding an interview to a client
+ * clock.
+ */
+const RESPONDABLE_INTERVIEW_STATUSES = ['scheduled'];
+
+/**
  * The fields an employer may change after creation.
  *
  * An allow-list, not a denylist, so a new field cannot become writable by accident
@@ -121,6 +170,12 @@ const SCHEDULED_INTERVIEW_STATUS = 'scheduled';
  * re-point it at a different employer and a different applicant, and there is no
  * route that can do that. `updatedAt` is absent too -- it is server-owned, so a
  * client value is ignored rather than written, and the service always sets it.
+ *
+ * `response` is absent as well, and that is NOT an oversight to be tidied away by a
+ * later reader: it is a writable field that belongs to the other write path.
+ * respondToInterview writes it for the applicant through its own route and guard, and
+ * adding it here would let the employer answer on the applicant's behalf as well. Its
+ * own comment explains the separation in full.
  */
 const UPDATABLE_INTERVIEW_FIELDS = [
     'scheduledAt',
@@ -378,6 +433,89 @@ const updateInterview = async (interviewId, payload) => {
 };
 
 /**
+ * STAGE 10A. Records the applicant's answer to one interview: `accepted` or
+ * `declined`. Reachable from PUT /interviews/:interviewId/response.
+ *
+ * WHY THIS IS NOT updateInterview WITH response ADDED TO THE ALLOW-LIST
+ *   Two reasons, and the first is the important one.
+ *
+ *   1. The two writes have opposite authors. updateInterview is the employer's, and
+ *      requireInterviewOwner admits nobody else -- it is deliberately a
+ *      single-authority guard whose Stage 7C comment records that "there is
+ *      deliberately no applicant path". Putting `response` in UPDATABLE_INTERVIEW_FIELDS
+ *      would either hand applicants the whole update (reschedule, cancel, complete, and
+ *      mark a no-show about themselves) or require a guard that admits two different
+ *      bodies on one route, which is the ambiguity a separate route removes outright.
+ *      The response gets its own route, its own guard and its own allow-list of exactly
+ *      one writable field, so neither write can reach the other's fields.
+ *   2. The actionability rule below applies to this write only. Making an interview's
+ *      status non-scheduled stops the applicant answering it; it must not stop the
+ *      employer recording a correction to it, which is what the shared allow-list
+ *      would have done.
+ *
+ * AUTHORIZATION: performed by the router's requireInterviewRespondent guard, which has
+ * already established that the caller is the employee on the interview's application.
+ * That guard decides identity; this function decides whether the interview can still
+ * be answered. The applicant's uid is passed in from the verified token by the
+ * controller and is never read from the body, so a caller cannot answer somebody
+ * else's interview by naming them -- they are refused at the guard, before this runs.
+ *
+ * The interview is read HERE rather than taken from the guard's `req.interview`, for
+ * the same reason createInterview re-reads the application: the guard's read answers
+ * "may this caller?" and this one answers "what is the current status?". The service
+ * must stay correct when called without a populated request object.
+ *
+ * NO OVERWRITE PROTECTION. An interview that is still `scheduled` may be answered
+ * again, so an applicant who accepts and then changes their mind can decline, and back
+ * again, with no second endpoint and no way to be stranded on an answer they did not
+ * mean. This is why RESPONDABLE_INTERVIEW_STATUSES is a status rule and not a
+ * "has already answered" rule: once the employer has completed, cancelled or marked the
+ * interview a no-show, the answer stops being writable, because at that point the
+ * record of what happened is the employer's to correct and no longer a question about
+ * the applicant's availability.
+ *
+ * `updatedAt` is rewritten, as on every other write in this file, so an answer is
+ * visible in the document's own history. `createdAt` and every identifying field are
+ * untouched, and no other field is in the patch -- the write is one field plus a
+ * timestamp, which is why no transaction is needed here either.
+ *
+ * Returns nothing. The controller answers with a message, like every other write in
+ * this API, and the client re-reads the interviews -- which it must do anyway to show
+ * the answer it just gave.
+ */
+const respondToInterview = async (interviewId, employeeId, payload) => {
+    if (!employeeId) {
+        throw new InterviewValidationError('Missing required fields');
+    }
+
+    if (!INTERVIEW_RESPONSES.includes(payload.response)) {
+        throw new InterviewValidationError(
+            `Invalid response. Must be one of: ${INTERVIEW_RESPONSES.join(', ')}.`
+        );
+    }
+
+    const interviewSnapshot = await interviewRepository.getInterviewById(interviewId);
+    if (!interviewSnapshot.exists) {
+        throw new InterviewNotFoundError('Interview not found');
+    }
+
+    // A 400 rather than a 403: the guard has already established this caller IS the
+    // applicant on this interview, so nothing is being withheld from them. They are
+    // asking to change something that is no longer changeable, which is the same
+    // distinction createInterview makes for a jobId that disagrees with its application.
+    if (!RESPONDABLE_INTERVIEW_STATUSES.includes(interviewSnapshot.data().status)) {
+        throw new InterviewValidationError(
+            `This interview can no longer be answered. Its status is: ${interviewSnapshot.data().status}.`
+        );
+    }
+
+    await interviewRepository.updateInterviewFields(interviewId, {
+        response: payload.response,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+};
+
+/**
  * Flattens a QuerySnapshot into `{ id, ...data }` objects.
  *
  * The same shape every list in this codebase produces (employments, tasks,
@@ -442,11 +580,14 @@ module.exports = {
     InterviewNotFoundError,
     INTERVIEW_TYPES,
     INTERVIEW_STATUSES,
+    INTERVIEW_RESPONSES,
+    RESPONDABLE_INTERVIEW_STATUSES,
     SCHEDULED_INTERVIEW_STATUS,
     UPDATABLE_INTERVIEW_FIELDS,
     REQUIRED_CREATE_FIELDS,
     createInterview,
     updateInterview,
+    respondToInterview,
     listInterviewsForJob,
     listInterviewsForApplication,
 };

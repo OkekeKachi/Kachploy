@@ -6,9 +6,9 @@ const {
     requireSelfParam,
     requireApplicationOwner,
     requireApplicationReviewer,
+    requireResumeAccess,
     requireJobOwner,
     JOB_APPLICANTS_FORBIDDEN,
-    requireTaskAssignment,
 } = require("../middleware/auth");
 
 
@@ -36,13 +36,24 @@ router.get('/job/:jobId', protect, requireJobOwner(JOB_APPLICANTS_FORBIDDEN), ap
 
 router.put('/:id/status', protect, requireApplicationReviewer, applicationController.updateApplicationStatus);
 
+// STAGE 12.12.1. Private resume delivery. requireResumeAccess admits only the
+// applicant (the resume's owner) or the employer who posted the job, and the
+// handler mints a short-lived signed URL from the application's own stored resume
+// reference. Registered as a three-segment GET; it cannot be shadowed by the
+// two-segment GET routes above nor by PUT /:id/status below.
+router.get('/:applicationId/resume/download', protect, requireResumeAccess, applicationController.downloadResume);
+
 router.delete('/:applicationId', protect, requireApplicationOwner, applicationController.withdrawApplication);
 
 
-// Route to create a task for the hired applicant
-// NOTE: duplicate of POST /tasks, kept until Stage 7. The two handlers are not
-// identical -- this one returns no taskId.
-router.post('/tasks', protect, requireTaskAssignment, applicationController.createTaskFromApplication);
+// STAGE 9F: `POST /tasks` used to be duplicated here as `/tasks`, which shared the
+// requireTaskAssignment guard but answered `{ message }` with no taskId. It had no
+// caller -- the client has always posted to POST /tasks -- and two response shapes for
+// one action is a trap rather than a convenience, so the duplicate and its handler are
+// gone. POST /tasks in routes/tasks.js is the only standalone task-creation endpoint.
+//
+// No route is registered at this path, so a request here now falls through to the
+// app's 404 handler. That is the intended answer: there is no second way in.
 
 
 module.exports = router;

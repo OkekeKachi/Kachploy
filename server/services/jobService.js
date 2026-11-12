@@ -46,14 +46,151 @@ class JobValidationError extends Error {}
 class JobNotFoundError extends Error {}
 
 /**
- * Lists every job, unfiltered, with the document id merged in.
+ * STAGE 12.11. The three application requirements an employer may set per job,
+ * and the values each may take.
  *
- * BUG (Stage 3): this is an unfiltered collection scan, so it exposes every job
- * in the database to any authenticated caller, and it has no pagination.
+ * `not_needed` means the item is not collected at all; `optional` means it is
+ * collected when the applicant supplies it; `required` means applyToJob refuses
+ * an application that omits it. The three names are stored verbatim as the string
+ * values of the `applicationRequirements` map on the job document.
+ *
+ * The defaults are chosen to preserve the behaviour every job had before this
+ * stage: a resume and a portfolio were never collected (`not_needed`), and a
+ * cover letter was allowed but never enforced server-side (`optional`). A job
+ * document written before the field existed is read through
+ * normalizeApplicationRequirements and therefore behaves exactly like a new job
+ * that kept the defaults -- no migration, no backfill.
  */
-const listJobs = async () => {
+const REQUIREMENT_LEVELS = ['not_needed', 'optional', 'required'];
+
+const REQUIREMENT_KEYS = ['resume', 'coverLetter', 'portfolio'];
+
+const DEFAULT_APPLICATION_REQUIREMENTS = {
+    resume: 'not_needed',
+    coverLetter: 'optional',
+    portfolio: 'not_needed',
+};
+
+/**
+ * Reads the stored `applicationRequirements` map into a complete, canonical
+ * object, filling any missing or unrecognised key from the defaults.
+ *
+ * This is the read side that makes older jobs work: a document with no
+ * `applicationRequirements` at all, or a partial one, is served the same three
+ * keys a new job would carry. It never throws -- an unreadable value is treated
+ * as "no requirement", the conservative direction, so a malformed document can
+ * never make an application impossible to file.
+ */
+const normalizeApplicationRequirements = (value) => {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+
+    const normalized = {};
+    for (const key of REQUIREMENT_KEYS) {
+        normalized[key] = REQUIREMENT_LEVELS.includes(source[key])
+            ? source[key]
+            : DEFAULT_APPLICATION_REQUIREMENTS[key];
+    }
+
+    return normalized;
+};
+
+/**
+ * Validates a client-supplied `applicationRequirements` value for the create and
+ * edit endpoints, returning the canonical object to persist.
+ *
+ * Absent (undefined or null) means "not supplied" and yields the defaults -- for
+ * create that is the document's starting value, and for edit no value means the
+ * caller is not touching the field (updateJob only writes what it is handed).
+ * Anything present must be an object, and every recognised key it carries must
+ * be one of REQUIREMENT_LEVELS; an unrecognised value is a 400 rather than a
+ * silent fallback, so a typo in the employer's intent is never discarded.
+ * Unrecognised *keys* are ignored rather than stored.
+ */
+const validateApplicationRequirements = (value) => {
+    if (value === undefined || value === null) {
+        return { ...DEFAULT_APPLICATION_REQUIREMENTS };
+    }
+
+    if (typeof value !== 'object' || Array.isArray(value)) {
+        throw new JobValidationError('applicationRequirements must be an object');
+    }
+
+    for (const key of REQUIREMENT_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(value, key) && !REQUIREMENT_LEVELS.includes(value[key])) {
+            throw new JobValidationError(
+                `Invalid ${key} requirement. Must be one of: ${REQUIREMENT_LEVELS.join(', ')}.`
+            );
+        }
+    }
+
+    return normalizeApplicationRequirements(value);
+};
+
+/**
+ * Trims a query parameter down to a usable string, or '' for anything that is
+ * not a string (missing, null, array, number, ...). A blank result means "this
+ * filter was not supplied", which is what keeps the no-query behaviour intact.
+ */
+const readSearchParam = (value) => (typeof value === 'string' ? value.trim() : '');
+
+/**
+ * Lists jobs, with the document id merged in.
+ *
+ * STAGE 12.1A. Optional filters arrive from the controller as Express's parsed
+ * query object. All of them are applied in memory over the same single
+ * unfiltered repository read this function has always made -- no Firestore
+ * operator, index, schema field, sorting or pagination is introduced, so the
+ * query the repository issues is unchanged.
+ *
+ *   * `q`       case-insensitive substring match across title, description and
+ *               location. Any single field matching is enough.
+ *   * `status`  case-insensitive exact match. Lower-casing both sides means the
+ *               legacy title-cased `Filled` still matches a `filled` filter.
+ *   * `jobType` case-insensitive exact match.
+ *
+ * Supplied filters combine with AND. A missing or whitespace-only parameter is
+ * ignored, so a request with none of them returns every job exactly as before.
+ * Searchable fields are read defensively: a job whose title, description,
+ * location, status or jobType is missing or not a string is simply treated as
+ * not matching that filter (or, when no filter applies to it, is still
+ * returned), so malformed documents can never throw here.
+ *
+ * The unfiltered collection scan is preserved deliberately. BUG (Stage 3): it
+ * exposes every job to any authenticated caller and has no pagination; that
+ * remains out of scope for this stage.
+ */
+const listJobs = async (filters = {}) => {
     const snapshot = await jobRepository.listAllJobs();
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const jobs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    const q = readSearchParam(filters.q).toLowerCase();
+    const status = readSearchParam(filters.status).toLowerCase();
+    const jobType = readSearchParam(filters.jobType).toLowerCase();
+
+    if (!q && !status && !jobType) {
+        return jobs;
+    }
+
+    return jobs.filter(job => {
+        if (q) {
+            const matchesKeyword = [job.title, job.description, job.location].some(
+                field => typeof field === 'string' && field.toLowerCase().includes(q)
+            );
+            if (!matchesKeyword) return false;
+        }
+
+        if (status) {
+            const jobStatus = typeof job.status === 'string' ? job.status.toLowerCase() : '';
+            if (jobStatus !== status) return false;
+        }
+
+        if (jobType) {
+            const type = typeof job.jobType === 'string' ? job.jobType.toLowerCase() : '';
+            if (type !== jobType) return false;
+        }
+
+        return true;
+    });
 };
 
 /**
@@ -85,6 +222,7 @@ const createJob = async (payload, postedBy) => {
         expectedEndDate,
         price,
         negotiable,
+        applicationRequirements,
         skillsRequired = [],
         requirements = [],      // New field for job requirements
         responsibilities = []   // New field for job responsibilities
@@ -97,6 +235,10 @@ const createJob = async (payload, postedBy) => {
     ) {
         throw new JobValidationError('Missing required fields');
     }
+
+    // STAGE 12.11. Validated before the write so an invalid spelling is a 400 and
+    // no job is created. Absent values become the defaults.
+    const normalizedRequirements = validateApplicationRequirements(applicationRequirements);
 
     const jobId = await jobRepository.createJobDoc({
         title,
@@ -115,6 +257,10 @@ const createJob = async (payload, postedBy) => {
         // way to change it.
         status: 'open',
         postedBy,
+        // STAGE 12.11: the employer's per-job application requirements, stored as
+        // a canonical `{ resume, coverLetter, portfolio }` map. Always written,
+        // so a job created without one carries the defaults explicitly.
+        applicationRequirements: normalizedRequirements,
         skillsRequired,         // Store the skills array
         requirements,           // Store the requirements array
         responsibilities,       // Store the responsibilities array
@@ -224,6 +370,7 @@ const updateJob = async (jobId, payload) => {
         expectedEndDate,
         price,
         negotiable,
+        applicationRequirements,
         skillsRequired,
         requirements,
         responsibilities
@@ -269,6 +416,14 @@ const updateJob = async (jobId, payload) => {
 
     if (responsibilities && Array.isArray(responsibilities)) {
         updateData.responsibilities = responsibilities;
+    }
+
+    // STAGE 12.11. Written only when the caller supplied it, so an edit that does
+    // not mention the requirements leaves the stored map exactly as it was --
+    // the same rule the optional arrays above follow. An invalid value is a 400
+    // before any write.
+    if (applicationRequirements !== undefined) {
+        updateData.applicationRequirements = validateApplicationRequirements(applicationRequirements);
     }
 
     // Update the job document with the new data
@@ -336,6 +491,11 @@ const updateJobStatus = async (jobId, status) => {
 module.exports = {
     JobValidationError,
     JobNotFoundError,
+    REQUIREMENT_LEVELS,
+    REQUIREMENT_KEYS,
+    DEFAULT_APPLICATION_REQUIREMENTS,
+    normalizeApplicationRequirements,
+    validateApplicationRequirements,
     listJobs,
     createJob,
     listEmployerJobs,

@@ -52,11 +52,17 @@ const sendFailure = (res, err, { log, message }) => {
 
 /**
  * GET /jobs
- * Returns every job with its document id merged in. Unfiltered.
+ * Returns every job with its document id merged in.
+ *
+ * STAGE 12.1A. Optional, backward-compatible filters are read from the query
+ * string (`q`, `status`, `jobType`) and handed to the service, which applies
+ * them in memory. With no parameters the response is byte-for-byte the
+ * unfiltered list it has always been. The controller still reads at most one
+ * service function and translates the outcome, as it did before.
  */
 const listJobs = async (req, res) => {
     try {
-        const jobs = await jobService.listJobs();
+        const jobs = await jobService.listJobs(req.query);
         res.status(200).json({ jobs });
     } catch (err) {
         sendFailure(res, err, {

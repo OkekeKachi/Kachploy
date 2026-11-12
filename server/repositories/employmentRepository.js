@@ -66,6 +66,20 @@ const listEmploymentsByEmployer = (employerId) =>
     db.collection('employments').where('employerId', '==', employerId).get();
 
 /**
+ * Every employment recorded for one job.
+ *
+ * STAGE 10H.1. Added for the employer-side employee-management read: one job may
+ * have hired several applicants, and "who is employed on this job" is a question
+ * keyed on the job rather than on either person. Single-field equality filter on
+ * `jobId`, so like its three siblings above it needs no composite Firestore index.
+ *
+ * Returns the raw QuerySnapshot, so the service keeps ownership of the document
+ * shaping, exactly as it does for the employee, employer and application reads.
+ */
+const listEmploymentsByJob = (jobId) =>
+    db.collection('employments').where('jobId', '==', jobId).get();
+
+/**
  * Every employment recorded for one application.
  *
  * STAGE 7H-2. Added for the duplicate-employment guard in
@@ -86,9 +100,31 @@ const listEmploymentsByEmployer = (employerId) =>
 const listEmploymentsByApplication = (applicationId) =>
     db.collection('employments').where('applicationId', '==', applicationId).get();
 
+/**
+ * One employment, by document id.
+ *
+ * STAGE 9C. The first single-document read on this collection, and the reason the
+ * task guard can be built on `employmentId` rather than on a chain. Every other
+ * read here is a query, which means a lookup keyed on something the employment
+ * carries; a task carries the employment's own id, so resolving it needs a direct
+ * `.doc()` read and cannot be expressed as an equality filter over a field the task
+ * does not have.
+ *
+ * Mirrors jobRepository.getJobById, including returning a raw snapshot: what a
+ * missing document means is the caller's decision, not this file's.
+ */
+const getEmploymentById = (employmentId) =>
+    db.collection('employments').doc(employmentId).get();
+
+const updateEmploymentFields = (employmentId, updates) =>
+    db.collection('employments').doc(employmentId).update(updates);
+
 module.exports = {
     addEmployment,
+    getEmploymentById,
     listEmploymentsByEmployee,
     listEmploymentsByEmployer,
+    listEmploymentsByJob,
     listEmploymentsByApplication,
+    updateEmploymentFields,
 };

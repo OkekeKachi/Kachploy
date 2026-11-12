@@ -19,8 +19,12 @@
 //     delete, so the response codes and error shapes here are unchanged
 //   - the dead `isNegotiable` branches are NOT in that list: Stage 5D fixed the
 //     field name and both now run
-//   - `createTaskFromApplication` still duplicates POST /tasks with no taskId
-//     in its response, and still reads `employeeId` from the body
+//
+// STAGE 9F: `createTaskFromApplication` is gone, so the last bullet above no longer
+// applies. It duplicated POST /tasks with no taskId in its response and had no
+// caller; the client has always posted to POST /tasks, which keeps the taskId. This
+// controller now handles only applications, and no request on this router reads
+// `employeeId` from the body to create anything.
 //
 // Stage 5B added the countApplicationsByJob handler and closed the Stage 5A
 // IDOR-01 finding on listApplicationsForJob, whose guard moved into the router.
@@ -32,6 +36,11 @@
 // router is unchanged, and no other handler was touched.
 
 const applicationService = require('../services/applicationService');
+// STAGE 12.12.1. The error config/cloudinary raises when the three environment
+// variables are absent. Required here so the resume-download handler can answer an
+// unconfigured server with a 503 rather than a 500 -- and, critically, rather than
+// falling back to a public URL.
+const { CloudinaryConfigurationError } = require('../config/cloudinary');
 
 /**
  * Maps a service failure onto the existing HTTP response.
@@ -179,9 +188,6 @@ const listApplicationsForJob = async (req, res) => {
  *                                        employmentService uses for startDate
  *                                        and falls back to a serverTimestamp
  *                                        when the job has none
- *   previousStatus req.application.status as it stood before this write, which
- *                                        is what stops a repeated `accepted`
- *                                        appending a second employment
  *
  * The response is unchanged: still 200 `{ message: 'Status updated successfully' }`
  * on the same conditions as before. No client field is added, so the body a
@@ -200,7 +206,6 @@ const updateApplicationStatus = async (req, res) => {
             employeeId: req.application.employeeId,
             jobId: req.application.jobId,
             jobStartDate: req.job.jobStartDate,
-            previousStatus: req.application.status,
         });
 
         res.status(200).json({ message: 'Status updated successfully' });
@@ -238,26 +243,33 @@ const withdrawApplication = async (req, res) => {
 };
 
 /**
- * POST /applications/tasks
+ * GET /applications/:applicationId/resume/download
  *
- * DEAD CODE: a duplicate of POST /tasks (routes/tasks.js), never called by the
- * client -- ViewJobApplications.jsx posts to /tasks. It survives Stage 1 only
- * because both paths now share the requireTaskAssignment guard. Removal is
- * scheduled for Stage 7.
+ * Guarded by requireResumeAccess in the router, which has already loaded the
+ * application (from Firestore, not the request) and rejected any caller who is
+ * neither the applicant nor the employer who owns the job. The handler reads no
+ * resume identifier from the request: the only input to the signature is the
+ * public id on `req.application.resume`.
  *
- * Not identical to the tasks.js handler: this uses .add() and returns no
- * taskId, so its response shape differs. `employeeId` still comes from the body,
- * which requireTaskAssignment authorises.
+ * Responds 200 with `{ url, name }` -- a short-lived signed URL and the file's
+ * display name. 404 when the application carries no resume. 503 when Cloudinary
+ * is not configured, matching the upload-signing endpoints; the environment may
+ * legitimately be incomplete on a fresh deployment. Never returns a public URL
+ * and never bypasses the guard.
  */
-const createTaskFromApplication = async (req, res) => {
+const downloadResume = async (req, res) => {
     try {
-        await applicationService.createTaskFromApplication(req.body);
+        const result = applicationService.getResumeDownloadUrl(req.application);
 
-        res.status(200).json({ message: 'Task created successfully' });
+        res.status(200).json(result);
     } catch (error) {
+        if (error instanceof CloudinaryConfigurationError) {
+            return res.status(503).json({ message: 'File downloads are not configured on this server' });
+        }
+
         sendFailure(res, error, {
-            log: 'Error creating task:',
-            message: 'Failed to create task',
+            log: 'Error generating resume download:',
+            message: 'Failed to generate resume download',
         });
     }
 };
@@ -269,5 +281,5 @@ module.exports = {
     countApplicationsByJob,
     updateApplicationStatus,
     withdrawApplication,
-    createTaskFromApplication,
+    downloadResume,
 };

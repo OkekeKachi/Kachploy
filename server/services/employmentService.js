@@ -11,7 +11,16 @@
 //   * createEmploymentFromHire -- the only write path. It is called from
 //     applicationService.updateApplicationStatus once the hire's own write has
 //     succeeded, never from a route of its own.
-//   * listEmploymentsForEmployee / listEmploymentsForEmployer -- the two reads.
+//   * listEmploymentsForEmployee / listEmploymentsForEmployer -- the two
+//     self-scoped reads.
+//   * listEmploymentsForJob / getEmployment -- STAGE 10H.1. The employer's
+//     employee-management reads: every employment on one job the caller owns, and
+//     one employment the caller is party to. Both are reads; this stage adds no
+//     write to the resource.
+//   * hasActiveEmploymentForApplication -- STAGE 10H.2. The read behind the rule
+//     that an application whose employment is active cannot be moved to
+//     `rejected`. It reuses listEmploymentsByApplication; it adds no write and no
+//     new lifecycle.
 //
 // WHAT DELIBERATELY DOES NOT EXIST YET
 //   * No create endpoint. An employment is never created by a direct client
@@ -52,15 +61,24 @@ const employmentRepository = require('../repositories/employmentRepository');
 class EmploymentValidationError extends Error {}
 
 /**
+ * The referenced employment does not exist. Surfaces as a 404.
+ *
+ * STAGE 10H.1. Mirrors InterviewNotFoundError and ConversationNotFoundError: the
+ * router's requireEmploymentParty guard turns a missing employment into a 404
+ * before this class is reached, so it is a backstop for a call made without that
+ * guard, exactly as the other single-document reads are. The class and the
+ * existence check stay because the service must be correct when called directly.
+ */
+class EmploymentNotFoundError extends Error {}
+
+/**
  * The canonical employment statuses.
  *
- * An allow-list, not a transition matrix, exactly as APPLICATION_STATUSES is.
- * `active` is the only value written in this stage; `ended` is reserved for the
- * end-employment write that is deliberately deferred. There is no `paused`,
- * `onLeave` or any other value, and nothing here accepts one from a client --
- * there is no client-supplied status on this path at all.
+ * An allow-list. `active` is written on creation. `completed` and `terminated`
+ * are end states added for the employment lifecycle; `ended` remains supported
+ * for backwards compatibility.
  */
-const EMPLOYMENT_STATUSES = ['active', 'ended'];
+const EMPLOYMENT_STATUSES = ['active', 'ended', 'completed', 'terminated'];
 
 /** The status a newly recorded employment is created with. */
 const ACTIVE_EMPLOYMENT_STATUS = 'active';
@@ -141,35 +159,38 @@ const resolveStartDate = (jobStartDate) =>
  * a hire, since ViewJobApplications.jsx restatuses every other applicant to
  * rejected in the same operation.
  *
- * `previousStatus` suppresses a SECOND employment for an application that was
- * already accepted. Stage 5G made the application statuses an allow-list and not
- * a transition matrix, so an employer may write `accepted` to an application that
- * already holds it, any number of times, and the client's in-flight guard only
- * stops two clicks within one tick. Without this check each of those writes would
- * append another employment for one hire. The consequence, accepted here because
- * no transaction is permitted and no repair path is in scope, is that a hire
- * whose employment write FAILED cannot be retried into existence by re-sending
- * the same status: the application is already accepted, so this returns null. A
- * repair path for that case belongs with the employment lifecycle work, not here.
+ * IDEMPOTENCE AND REPAIR. The single guard is the query on the `employments`
+ * collection below: an application that already has an employment -- whatever its
+ * status -- records no second one. It is the authority rather than an inference
+ * from the application's status, because the application statuses are an
+ * allow-list and not a transition matrix: an employer may write `accepted` to an
+ * application that already holds it, any number of times, and the client's
+ * in-flight guard only stops two clicks within one tick. Without the query each of
+ * those writes would append another employment for one hire.
  *
- * STAGE 7H-2 adds the check that `previousStatus` inference could not make. The
- * inference above is caller-supplied and only holds while the application stays
- * `accepted`; an application that is rejected and then cleared for hiring and
- * hired again arrives with previousStatus `interviewed`, passes the inference, and
- * used to get a second employment for the same hire. So after validating the
- * fields, this now asks the `employments` collection whether this application
- * already has one and returns null if it does. The `previousStatus` guard is kept:
- * it is cheaper, and keeping it preserves the failed-write behaviour recorded
- * above. See the comment at the check for what read-before-write does not settle.
+ * Because the query, not the application's previous status, decides, re-sending
+ * `accepted` for an application that is already accepted but has NO employment
+ * records the missing one. That is the repair path for the divergence recorded at
+ * the call site: applicationService writes the status and the employment as two
+ * independent writes (no transaction), so a failure between them can leave an
+ * accepted application with no employment, and a retry now heals it instead of
+ * being silently skipped. A retry after a hire whose employment write succeeded is
+ * still a no-op: the query finds the existing record and returns null.
+ *
+ * STAGE 7H-2 introduced the query for the duplicate the old `previousStatus`
+ * inference could not see: an application that is rejected and then cleared for
+ * hiring and hired again arrives with previousStatus `interviewed`, so an
+ * inference from the status alone passed it through, and it used to get a second
+ * employment for one hire. Asking the collection instead of inferring from the
+ * application is what closes that.
  *
  * An employer who later rejects an application that is recorded as employed does
  * not end the employment; nothing in this stage writes `ended` or an endDate.
  * That is the deferred end-employment write, and it is why this stage adds no
  * update path for the collection.
  */
-const createEmploymentFromHire = async ({ applicationId, newStatus, previousStatus, employerId, employeeId, jobId, jobStartDate }) => {
+const createEmploymentFromHire = async ({ applicationId, newStatus, employerId, employeeId, jobId, jobStartDate }) => {
     if (newStatus !== HIRED_APPLICATION_STATUS) return null;
-    if (previousStatus === HIRED_APPLICATION_STATUS) return null;
 
     const context = { employerId, employeeId, jobId, applicationId };
     for (const field of REQUIRED_EMPLOYMENT_FIELDS) {
@@ -180,14 +201,14 @@ const createEmploymentFromHire = async ({ applicationId, newStatus, previousStat
 
     // STAGE 7H-2: the authoritative duplicate check.
     //
-    // The `previousStatus` guard above is an INFERENCE about the application -- "it
-    // was already accepted, so it was already hired" -- and it is caller-supplied.
-    // It is wrong for any application that passed through `rejected` on its way
-    // back, which Stage 7G made reachable from the employer UI: reject, clear for
-    // hiring, hire again. That path left two `active` employments for one hire,
-    // because the second write saw previousStatus `interviewed` rather than
-    // `accepted`. Asking the collection instead of inferring from the application
-    // is what closes it.
+    // It asks the collection rather than inferring from the application's status.
+    // The old `previousStatus` inference was caller-supplied and wrong for any
+    // application that passed through `rejected` on its way back, which Stage 7G
+    // made reachable from the employer UI: reject, clear for hiring, hire again.
+    // That path left two `active` employments for one hire, because the second
+    // write saw previousStatus `interviewed` rather than `accepted`. Asking the
+    // collection is what closes it -- and, being the only guard, it is also what
+    // lets a repeated `accepted` repair a hire whose employment write failed.
     //
     // Deliberately AFTER the required-field loop, so a call that cannot describe an
     // employment still fails on its own validation without spending a read, and
@@ -243,6 +264,11 @@ const toPlainObjects = (snapshot) => {
     return employments;
 };
 
+class EmploymentStateError extends Error {}
+
+const TERMINATION_REASONS = ['mutual', 'employer_initiated', 'employee_initiated', 'contract_breach', 'other'];
+const COMPLETION_REASONS = ['completed', 'contract_expired', 'mutual_completion'];
+
 /**
  * Every employment held by one employee.
  *
@@ -283,12 +309,198 @@ const listEmploymentsForEmployer = async (uid) => {
     return toPlainObjects(snapshot);
 };
 
+/**
+ * STAGE 10H.1. Every employment recorded on one job, as plain objects.
+ *
+ * The employer-side management read: a job may have hired several applicants, so
+ * the caller needs every employment the job produced rather than the single one
+ * an application read would return. `toPlainObjects` gives each entry the same
+ * `{ id, ...document }` shape the other three reads produce.
+ *
+ * AUTHORIZATION: the service performs none. `jobId` reaches here from the path
+ * through requireJobOwner in routes/employments.js, which loads the job and
+ * answers 403 unless `job.postedBy === req.user.uid` -- the same guard that
+ * already protects GET /applications/job/:jobId and GET /tasks/job/:jobId, so
+ * being the job's poster is the one condition, and a client-supplied employer id
+ * plays no part. A job with no hires is an empty list, not a 404: the job exists
+ * and "nobody has been hired" is not a missing resource.
+ *
+ * There is deliberately no join to `jobs` or `applications`. The employment
+ * document already carries `jobId` and `applicationId`, and a per-record read of
+ * another collection would be the N+1 pattern Stage 4 documented, buying the UI
+ * nothing it cannot fetch itself.
+ */
+const listEmploymentsForJob = async (jobId) => {
+    const snapshot = await employmentRepository.listEmploymentsByJob(jobId);
+
+    return toPlainObjects(snapshot);
+};
+
+/**
+ * STAGE 10H.1. One employment by document id, as a plain object.
+ *
+ * The first single-document read on this collection that is reachable from a
+ * route. `getEmploymentById` already existed -- Stage 9C added it for the task
+ * guard -- so this reuses it rather than issuing a second kind of lookup.
+ *
+ * AUTHORIZATION: performed by the router's requireEmploymentParty guard, which
+ * has already established that the caller is the employment's employer or its
+ * employee, so the 404 below is a backstop for a call made without it -- the same
+ * arrangement conversationService.getConversation and taskService.getTask use.
+ *
+ * The result is `{ id, ...document }`, exactly the shape the four list reads
+ * produce, so a single-employment read and its row in a list agree field for
+ * field.
+ */
+const getEmployment = async (employmentId) => {
+    const snapshot = await employmentRepository.getEmploymentById(employmentId);
+
+    if (!snapshot.exists) {
+        throw new EmploymentNotFoundError('Employment not found');
+    }
+
+    return { id: snapshot.id, ...snapshot.data() };
+};
+
+const isEmploymentActive = (employment) => {
+    if (!employment) return false;
+    const status = employment.status;
+    return status === ACTIVE_EMPLOYMENT_STATUS || status === 'active';
+};
+
+/**
+ * Complete an employment (mutual/completion). Both parties can initiate
+ * with reasons; prevents duplicate completion/termination.
+ */
+const completeEmployment = async ({ employmentId, callerId, reason = 'completed', note = '', metadata = {} } = {}) => {
+    if (!employmentId) throw new EmploymentValidationError('employmentId is required');
+    if (!callerId) throw new EmploymentValidationError('callerId is required');
+
+    const snapshot = await employmentRepository.getEmploymentById(employmentId);
+    if (!snapshot.exists) throw new EmploymentNotFoundError('Employment not found');
+    const employment = { id: snapshot.id, ...snapshot.data() };
+
+    if (employment.employerId !== callerId && employment.employeeId !== callerId) {
+        throw new EmploymentValidationError('Not authorized to complete this employment');
+    }
+
+    if (employment.status === 'completed' || employment.status === 'terminated' || employment.status === 'ended') {
+        throw new EmploymentStateError('Employment already ended');
+    }
+
+    if (!COMPLETION_REASONS.includes(reason)) {
+        throw new EmploymentValidationError('Invalid completion reason');
+    }
+
+    const updates = {
+        status: 'completed',
+        completionReason: reason,
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        completedBy: callerId,
+        completionNote: typeof note === 'string' ? note : '',
+        completionMetadata: metadata || {},
+    };
+
+    await employmentRepository.updateEmploymentFields(employmentId, updates);
+    const updated = await employmentRepository.getEmploymentById(employmentId);
+    return { id: updated.id, ...updated.data() };
+};
+
+/**
+ * Terminate an employment (early termination). Both parties can initiate
+ * with reasons; prevents duplicate completion/termination.
+ */
+const terminateEmployment = async ({ employmentId, callerId, reason = 'other', note = '', metadata = {} } = {}) => {
+    if (!employmentId) throw new EmploymentValidationError('employmentId is required');
+    if (!callerId) throw new EmploymentValidationError('callerId is required');
+
+    const snapshot = await employmentRepository.getEmploymentById(employmentId);
+    if (!snapshot.exists) throw new EmploymentNotFoundError('Employment not found');
+    const employment = { id: snapshot.id, ...snapshot.data() };
+
+    if (employment.employerId !== callerId && employment.employeeId !== callerId) {
+        throw new EmploymentValidationError('Not authorized to terminate this employment');
+    }
+
+    if (employment.status === 'completed' || employment.status === 'terminated' || employment.status === 'ended') {
+        throw new EmploymentStateError('Employment already ended');
+    }
+
+    if (!TERMINATION_REASONS.includes(reason)) {
+        throw new EmploymentValidationError('Invalid termination reason');
+    }
+
+    const updates = {
+        status: 'terminated',
+        terminationReason: reason,
+        terminatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        terminatedBy: callerId,
+        terminationNote: typeof note === 'string' ? note : '',
+        terminationMetadata: metadata || {},
+    };
+
+    await employmentRepository.updateEmploymentFields(employmentId, updates);
+    const updated = await employmentRepository.getEmploymentById(employmentId);
+    return { id: updated.id, ...updated.data() };
+};
+
+/**
+ * Record settlement/protection state for an ended employment (no payments moved).
+ */
+const recordEmploymentSettlement = async ({ employmentId, callerId, settlement = {} } = {}) => {
+    if (!employmentId) throw new EmploymentValidationError('employmentId is required');
+    if (!callerId) throw new EmploymentValidationError('callerId is required');
+
+    const snapshot = await employmentRepository.getEmploymentById(employmentId);
+    if (!snapshot.exists) throw new EmploymentNotFoundError('Employment not found');
+    const employment = { id: snapshot.id, ...snapshot.data() };
+
+    if (employment.employerId !== callerId && employment.employeeId !== callerId) {
+        throw new EmploymentValidationError('Not authorized to update settlement for this employment');
+    }
+
+    const updates = {
+        settlement: settlement || {},
+        settlementUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        settlementUpdatedBy: callerId,
+    };
+
+    await employmentRepository.updateEmploymentFields(employmentId, updates);
+    const updated = await employmentRepository.getEmploymentById(employmentId);
+    return { id: updated.id, ...updated.data() };
+};
+
+/**
+ * STAGE 10H.2. Whether an application is currently employed -- that is, whether it
+ * has an employment whose status is `active`.
+ */
+const hasActiveEmploymentForApplication = async (applicationId) => {
+    const snapshot = await employmentRepository.listEmploymentsByApplication(applicationId);
+
+    return snapshot.docs.some((doc) => {
+        const data = doc.data();
+        const status = data.status;
+        return status === ACTIVE_EMPLOYMENT_STATUS || status === 'active';
+    });
+};
+
 module.exports = {
     EmploymentValidationError,
+    EmploymentNotFoundError,
+    EmploymentStateError,
     EMPLOYMENT_STATUSES,
     ACTIVE_EMPLOYMENT_STATUS,
     HIRED_APPLICATION_STATUS,
+    TERMINATION_REASONS,
+    COMPLETION_REASONS,
     createEmploymentFromHire,
     listEmploymentsForEmployee,
     listEmploymentsForEmployer,
+    listEmploymentsForJob,
+    getEmployment,
+    hasActiveEmploymentForApplication,
+    isEmploymentActive,
+    completeEmployment,
+    terminateEmployment,
+    recordEmploymentSettlement,
 };

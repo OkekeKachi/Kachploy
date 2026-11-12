@@ -16,6 +16,9 @@
  *   4. employee reads of their own application's interviews, and the refusal of
  *      everyone else's
  *   5. status changes, and that they do not reach any other collection
+ *   6. STAGE 10A: the applicant's own accept/decline -- who may answer, which
+ *      answers are legal, and that an interview which is no longer scheduled cannot
+ *      be answered at all
  */
 
 const test = require('node:test');
@@ -809,6 +812,285 @@ test('an update can be repeated, including back to an earlier status', async () 
 });
 
 // ---------------------------------------------------------------------------
+// 6. Applicant responses (Stage 10A).
+// ---------------------------------------------------------------------------
+
+/** The response call under test. Defaults to an acceptance on int-1. */
+const respond = (body = { response: 'accepted' }, api = employeeApi, interviewId = 'int-1') =>
+    api.put(`/interviews/${interviewId}/response`, { body });
+
+test('an applicant can accept an interview on their own application', async () => {
+  seedInterviews();
+
+  const res = await respond({ response: 'accepted' });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.message, 'Interview response recorded successfully');
+  assert.equal(client.readDoc('interviews', 'int-1').response, 'accepted');
+});
+
+test('an applicant can decline an interview', async () => {
+  seedInterviews();
+
+  const res = await respond({ response: 'declined' });
+
+  assert.equal(res.status, 200);
+  assert.equal(client.readDoc('interviews', 'int-1').response, 'declined');
+});
+
+test('a newly scheduled interview has no response recorded', async () => {
+  seedJobWithApplication();
+
+  await create();
+
+  // "Not answered yet" is the absence of the key, not a stored `pending`. The
+  // candidates are an allow-list of the two answers a client may send, and a
+  // document created by this service must not contain a third value it cannot write.
+  const [record] = interviews();
+  assert.equal('response' in record, false);
+  assert.equal(record.status, 'scheduled');
+});
+
+test('a response is stored on the interview and nowhere else', async () => {
+  seedInterviews();
+  const appBefore = client.readDoc('applications', 'app-1');
+
+  await respond({ response: 'accepted' });
+
+  const stored = client.readDoc('interviews', 'int-1');
+  assert.equal(stored.response, 'accepted');
+  // The one field this route writes. Everything that says what the interview is, and
+  // the lifecycle status in particular, is untouched: answering is not completing,
+  // cancelling, or being hired.
+  assert.equal(stored.status, 'scheduled');
+  assert.equal(stored.applicationId, 'app-1');
+  assert.equal(stored.jobId, 'job-1');
+  assert.equal(stored.employerId, 'employer-1');
+  assert.equal(stored.employeeId, 'employee-1');
+  assert.equal(stored.scheduledAt, '2026-10-02T10:00:00.000Z');
+  assert.deepEqual(stored.createdAt, { _seconds: 1767225600, _nanoseconds: 0 });
+  assert.deepEqual(client.readDoc('applications', 'app-1'), appBefore);
+});
+
+test('a response rewrites updatedAt and leaves createdAt alone', async () => {
+  seedInterviews();
+  const before = client.readDoc('interviews', 'int-1');
+
+  await respond({ response: 'accepted' });
+
+  // Every write in this service restamps updatedAt, so an answer is visible in the
+  // document's own history rather than only in the response field.
+  const after = client.readDoc('interviews', 'int-1');
+  assert.deepEqual(after.updatedAt, before.updatedAt, 'the injected clock is fixed');
+  assert.deepEqual(after.createdAt, before.createdAt);
+});
+
+test('a response is refused once the interview is no longer scheduled', async () => {
+  for (const status of ['completed', 'cancelled', 'no_show']) {
+    seedInterviews();
+    client.seed('interviews', 'int-1', interview({ status }));
+
+    const res = await respond({ response: 'accepted' });
+
+    // A 400, not a 403: the guard has already established this caller IS the
+    // applicant, so nothing is withheld from them. They are asking to change
+    // something that is no longer changeable.
+    assert.equal(res.status, 400, `expected 400 for ${status}`);
+    assert.equal(
+      res.body.message,
+      `This interview can no longer be answered. Its status is: ${status}.`
+    );
+    assert.equal('response' in client.readDoc('interviews', 'int-1'), false);
+  }
+});
+
+test('an applicant may change their answer while the interview is still scheduled', async () => {
+  seedInterviews();
+
+  await respond({ response: 'accepted' });
+  assert.equal(client.readDoc('interviews', 'int-1').response, 'accepted');
+
+  await respond({ response: 'declined' });
+  assert.equal(client.readDoc('interviews', 'int-1').response, 'declined');
+
+  // Deliberately not a "has already answered" rule. A change of mind is the ordinary
+  // case for an invitation a person has not turned up to yet, and refusing it would
+  // need a second endpoint and a way to un-answer an interview nobody could otherwise
+  // correct.
+});
+
+test('a response rejects any value outside the two legal answers', async () => {
+  seedInterviews();
+
+  const cases = [
+    { response: 'maybe' },
+    { response: 'ACCEPTED' },
+    { response: 'accepted ' },
+    { response: 'pending' },
+    { response: '' },
+    { response: null },
+    {},
+    { status: 'accepted' },
+  ];
+
+  for (const body of cases) {
+    const res = await respond(body);
+
+    assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(body)}`);
+    assert.equal(res.body.message, 'Invalid response. Must be one of: accepted, declined.');
+  }
+
+  assert.equal('response' in client.readDoc('interviews', 'int-1'), false);
+});
+
+test('an applicant cannot answer an interview on somebody else\'s application', async () => {
+  seedInterviews();
+  const other = await client.authed('employee-2');
+
+  // int-1 is employee-1's. employee-2 is a real applicant with their own interview in
+  // the same fixture, so this is a refusal by application and not by role.
+  const res = await respond({ response: 'accepted' }, other);
+
+  assert.equal(res.status, 403);
+  assert.equal(res.body.message, 'You do not have permission to respond to this interview');
+  assert.equal('response' in client.readDoc('interviews', 'int-1'), false);
+});
+
+test('the employer who scheduled an interview cannot answer it', async () => {
+  seedInterviews();
+
+  const res = await respond({ response: 'accepted' }, employerApi);
+
+  assert.equal(res.status, 403);
+  assert.equal('response' in client.readDoc('interviews', 'int-1'), false);
+});
+
+test('the response guard resolves the applicant from the application, not the interview', async () => {
+  seedJobWithApplication();
+  client.seed('interviews', 'int-1', interview({ employeeId: 'someone-else' }));
+  const impostor = await client.authed('someone-else');
+
+  // The guard resolves interview -> application -> application.employeeId and
+  // deliberately does not trust the interview's own stored employeeId, which is a
+  // value this service wrote rather than an authority.
+  const allowed = await respond({ response: 'accepted' });
+  const refused = await respond({ response: 'declined' }, impostor);
+
+  assert.equal(allowed.status, 200);
+  assert.equal(refused.status, 403);
+  assert.equal(client.readDoc('interviews', 'int-1').response, 'accepted');
+});
+
+test('a response requires authentication', async () => {
+  seedInterviews();
+
+  const res = await client.put('/interviews/int-1/response', { body: { response: 'accepted' } });
+
+  assert.equal(res.status, 401);
+  assert.equal('response' in client.readDoc('interviews', 'int-1'), false);
+});
+
+test('a response to a missing interview is a 404', async () => {
+  seedInterviews();
+
+  const res = await respond({ response: 'accepted' }, employeeApi, 'ghost');
+
+  assert.equal(res.status, 404);
+  assert.equal(res.body.message, 'Interview not found');
+});
+
+test('a response is refused when the interview\'s application no longer exists', async () => {
+  client.seed('interviews', 'int-1', interview());
+  const res = await respond({ response: 'accepted' });
+
+  // The guard loads the application rather than assuming it, so a missing parent is a
+  // 404 naming what is actually missing instead of a 500 from an undefined property.
+  assert.equal(res.status, 404);
+  assert.equal(res.body.message, 'Application not found');
+});
+
+test('the employer sees the response on the job-wide read', async () => {
+  seedInterviews();
+  await respond({ response: 'declined' });
+
+  const res = await employerApi.get('/interviews/job/job-1');
+
+  assert.equal(res.status, 200);
+  const int1 = res.body.interviews.find((i) => i.id === 'int-1');
+  assert.equal(int1.response, 'declined');
+  // The read is deliberately unreshaped, so the absence of an answer reads as the
+  // absence of the key on the interviews nobody has answered.
+  const int2 = res.body.interviews.find((i) => i.id === 'int-2');
+  assert.equal('response' in int2, false);
+});
+
+test('the applicant sees their own response on the application read', async () => {
+  seedInterviews();
+  await respond({ response: 'accepted' });
+
+  const res = await employeeApi.get('/interviews/application/app-1');
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.interviews[0].response, 'accepted');
+});
+
+test('the response route writes the response and nothing else', async () => {
+  seedInterviews();
+
+  const res = await respond({
+    response: 'accepted',
+    status: 'completed',
+    applicationId: 'app-2',
+    jobId: 'job-2',
+    employeeId: 'attacker',
+    createdAt: { _seconds: 0, _nanoseconds: 0 },
+    somethingUnknown: 'dropped',
+  });
+
+  // One route, one writable field. A body key of any other name is dropped rather than
+  // honoured, so this route cannot reach the employer's update surface at all.
+  assert.equal(res.status, 200);
+  const stored = client.readDoc('interviews', 'int-1');
+  assert.equal(stored.response, 'accepted');
+  assert.equal(stored.status, 'scheduled');
+  assert.equal(stored.applicationId, 'app-1');
+  assert.equal(stored.jobId, 'job-1');
+  assert.equal(stored.employeeId, 'employee-1');
+  assert.deepEqual(stored.createdAt, { _seconds: 1767225600, _nanoseconds: 0 });
+  assert.equal('somethingUnknown' in stored, false);
+});
+
+test('the employer update route cannot write a response', async () => {
+  seedInterviews();
+
+  // The mirror of the test above, and the reason `response` is not in
+  // UPDATABLE_INTERVIEW_FIELDS: an employer answering on the applicant's behalf
+  // would be a second writer of the one field Stage 10A gave them.
+  const res = await employerApi.put('/interviews/int-1', { body: { response: 'accepted' } });
+
+  assert.equal(res.status, 400);
+  assert.equal(res.body.message, 'Missing fields to update');
+  assert.equal('response' in client.readDoc('interviews', 'int-1'), false);
+});
+
+test('answering an interview changes no other collection and no application status', async () => {
+  seedInterviews();
+  const appBefore = client.readDoc('applications', 'app-1');
+  const jobBefore = client.readDoc('jobs', 'job-1');
+
+  await respond({ response: 'accepted' });
+
+  // Accepting an interview is not being hired, and declining one is not being
+  // rejected. The hire remains the only thing that writes an application status and
+  // the only thing that creates an employment, so neither happens here.
+  assert.deepEqual(client.readDoc('applications', 'app-1'), appBefore);
+  assert.equal(client.readDoc('applications', 'app-1').status, 'pending');
+  assert.deepEqual(client.readDoc('jobs', 'job-1'), jobBefore);
+  assert.deepEqual(client.readAll('employments'), {});
+  assert.deepEqual(client.readAll('tasks'), {});
+});
+
+// ---------------------------------------------------------------------------
 // Isolation from the rest of the domain.
 // ---------------------------------------------------------------------------
 
@@ -856,6 +1138,21 @@ test('an interview created before the hire survives the hire unchanged', async (
   // from. Nothing else about the test changes -- the point is still that the
   // interview document is untouched by the hire.
   seedJobWithApplication({}, { status: 'interviewed' });
+  client.seed('contractProposals', 'prop-1', {
+    applicationId: 'app-1',
+    jobId: 'job-1',
+    employerId: 'employer-1',
+    employeeId: 'employee-1',
+    paymentMode: 'full',
+    currency: 'NGN',
+    totalAmountMinor: 1000000,
+    commissionBps: 500,
+    commissionAmountMinor: 50000,
+    milestones: [],
+    status: 'accepted',
+    acceptedAt: { _seconds: 1767225600, _nanoseconds: 0 },
+    acceptedBy: 'employee-1',
+  });
   await create();
   const before = interviews()[0];
 

@@ -1,15 +1,17 @@
 // interviewController.js
 //
-// HTTP layer for the interviews resource (new in Stage 7C). Four Express handlers,
+// HTTP layer for the interviews resource (new in Stage 7C). Five Express handlers,
 // each doing only the three things every controller in this codebase does: take
 // identity from the verified token, call exactly one interviewService function, and
 // translate the outcome into a status code and body.
 //
-// All four endpoints are employer-authorised for writes and party-authorised for
-// reads; the decisions themselves are made by the three Stage 7C guards in the
-// router, exactly as requireJobOwner and requireApplicationReviewer are for jobs
-// and applications. No handler here re-derives ownership, and no handler reads an
-// identity from the request body.
+// Four of the five endpoints are employer-authorised for writes and party-authorised
+// for reads; STAGE 10A adds the fifth, PUT /interviews/:interviewId/response, which is
+// applicant-authorised -- the first write in this resource an employer cannot perform.
+// Every decision about who may do what is made in the guards in the router, exactly as
+// requireJobOwner and requireApplicationReviewer are for jobs and applications. No
+// handler here re-derives ownership, and no handler reads an identity from the request
+// body.
 //
 // WHAT THIS CONTROLLER DELIBERATELY DOES NOT DO
 //   * It does not touch `applications`. Scheduling an interview leaves the
@@ -158,9 +160,42 @@ const listInterviewsForApplication = async (req, res) => {
     }
 };
 
+/**
+ * PUT /interviews/:interviewId/response
+ *
+ * STAGE 10A. The applicant's answer to one interview: `accepted` or `declined`.
+ * Guarded by requireInterviewRespondent, so only the employee the interview's
+ * application belongs to reaches this handler -- the employer who scheduled it is
+ * refused with a 403 at the guard, and a missing interview is a 404 there too.
+ *
+ * `employeeId` is `req.user.uid`, never a body field, and the body is reduced to the
+ * one field this route is allowed to write. The service decides the rest: whether the
+ * value is one of the two legal answers, and whether the interview is still in a
+ * status that can be answered.
+ *
+ * Responds `{ message }`, as PUT /interviews/:interviewId and the other updates in this
+ * API do -- no endpoint here returns the updated document. The client re-reads the
+ * interviews after this call, which it needs to do anyway in order to show the answer.
+ */
+const respondToInterview = async (req, res) => {
+    const { interviewId } = req.params;
+
+    try {
+        await interviewService.respondToInterview(interviewId, req.user.uid, req.body);
+
+        res.status(200).json({ message: 'Interview response recorded successfully' });
+    } catch (error) {
+        sendFailure(res, error, {
+            log: 'Error recording interview response:',
+            message: 'Failed to record interview response',
+        });
+    }
+};
+
 module.exports = {
     createInterview,
     updateInterview,
+    respondToInterview,
     listInterviewsForJob,
     listInterviewsForApplication,
 };

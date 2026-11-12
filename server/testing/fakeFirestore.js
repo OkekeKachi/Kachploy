@@ -11,11 +11,14 @@
  * depends on them):
  *   - doc.get() on a missing doc  -> exists === false, data() === undefined
  *   - doc.update() on a missing doc -> throws (real SDK: NOT_FOUND)
+ *   - doc.create() on an existing doc -> throws (real SDK: code 6 ALREADY_EXISTS)
  *   - set(obj, { merge: true })   -> merge into existing
  *   - set(obj)                    -> replace existing entirely
  *   - FieldValue.increment(n)     -> applied against existing value (missing === 0)
  *   - FieldValue.serverTimestamp()-> resolved at write time
  *   - Date and serverTimestamp()  -> stored as a Timestamp (see timestampFrom)
+ *   - runTransaction(fn)          -> optimistic read-decide-write with conflict
+ *                                    detection and bounded retry (Stage 1K/3C.1.3)
  *   - data()/docs return defensive copies
  *
  * Anything NOT implemented throws loudly, so that a future route change which
@@ -25,6 +28,12 @@
 
 const INCREMENT = 'increment';
 const SERVER_TIMESTAMP = 'serverTimestamp';
+
+/**
+ * STAGE 2G. Value returned by FieldPath.documentId() in this double. Ordering
+ * by document id is the deterministic cursor the bounded backfill pages with.
+ */
+const DOCUMENT_ID_FIELD = '__name__';
 
 const AUTO_ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
@@ -44,6 +53,17 @@ function clone(value) {
 function notFound(path) {
   const err = new Error(`5 NOT_FOUND: no entity to update: ${path}`);
   err.code = 5;
+  return err;
+}
+
+/**
+ * STAGE 1K. The real SDK's code-6 conflict, raised by `doc().create()` when the
+ * document already exists. Modelled so the atomic-create loser path in
+ * paymentService is classified by code exactly as it would be in production.
+ */
+function alreadyExists(path) {
+  const err = new Error(`6 ALREADY_EXISTS: entity already exists: ${path}`);
+  err.code = 6;
   return err;
 }
 
@@ -140,6 +160,24 @@ class DocRef {
     return undefined;
   }
 
+  /**
+   * STAGE 1K. Atomic create: writes ONLY when no document exists at this id,
+   * mirroring the real SDK's `doc().create()`. The real SDK rejects an existing
+   * document with a code-6 ALREADY_EXISTS error; this throws the same shape so
+   * the service's "already exists" branch is exercised exactly as in
+   * production. The check and the write are synchronous (no await between them),
+   * which is what makes two concurrent creates on one id resolve to ONE winner
+   * and one ALREADY_EXISTS loser -- the store is single-threaded.
+   */
+  async create(data) {
+    this._store.calls.push({ op: 'create', path: this.path });
+    if (this._store.read(this._collection, this.id) !== undefined) {
+      throw alreadyExists(this.path);
+    }
+    this._store.write(this._collection, this.id, resolveValue(data), false);
+    return undefined;
+  }
+
   async update(data) {
     this._store.calls.push({ op: 'update', path: this.path });
     const current = this._store.read(this._collection, this.id);
@@ -189,16 +227,62 @@ class Query {
     ]);
   }
 
-  orderBy() {
-    throw new Error('fakeFirestore: orderBy() is not implemented.');
+  /** STAGE 2G. Only FieldPath.documentId(), ascending, is implemented. */
+  orderBy(field, direction = 'asc') {
+    if (direction !== 'asc') {
+      throw new Error('fakeFirestore: only ascending ordering is implemented.');
+    }
+    return new Query(this._store, this._collection, [
+      ...this._constraints,
+      { type: 'orderBy', field, direction },
+    ]);
   }
 
-  limit() {
-    throw new Error('fakeFirestore: limit() is not implemented.');
+  limit(count) {
+    if (!Number.isSafeInteger(count) || count < 1) {
+      throw new Error('fakeFirestore: limit() requires a positive safe integer.');
+    }
+    return new Query(this._store, this._collection, [
+      ...this._constraints,
+      { type: 'limit', count },
+    ]);
+  }
+
+  /**
+   * STAGE 2G. Exclusive cursor against the ordered value (a document id for
+   * FieldPath.documentId() ordering). Mirrors the real SDK's exclusive
+   * semantics: results strictly AFTER the cursor.
+   */
+  startAfter(value) {
+    return new Query(this._store, this._collection, [
+      ...this._constraints,
+      { type: 'startAfter', value },
+    ]);
   }
 
   async get() {
     this._store.calls.push({ op: 'query', path: this._collection, constraints: this._constraints });
+    const orderBys = this._constraints.filter((c) => c.type === 'orderBy');
+    if (orderBys.length > 1) {
+      throw new Error('fakeFirestore: only a single orderBy() is implemented.');
+    }
+    if (orderBys[0] && orderBys[0].field !== DOCUMENT_ID_FIELD) {
+      throw new Error(
+        `fakeFirestore: only FieldPath.documentId() ordering is implemented, got "${orderBys[0].field}".`
+      );
+    }
+    const startAfters = this._constraints.filter((c) => c.type === 'startAfter');
+    if (startAfters.length > 1) {
+      throw new Error('fakeFirestore: only a single startAfter() is implemented.');
+    }
+    if (startAfters[0] && !orderBys[0]) {
+      throw new Error('fakeFirestore: startAfter() requires a prior orderBy().');
+    }
+    const limits = this._constraints.filter((c) => c.type === 'limit');
+    if (limits.length > 1) {
+      throw new Error('fakeFirestore: only a single limit() is implemented.');
+    }
+
     const rows = this._store.list(this._collection);
     const docs = [];
     for (const [id, data] of rows) {
@@ -211,6 +295,24 @@ class Query {
         }
       }
       if (keep) docs.push(new DocSnapshot(id, data));
+    }
+
+    if (orderBys[0]) {
+      docs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    }
+    if (startAfters[0]) {
+      const cursor = startAfters[0].value;
+      if (typeof cursor !== 'string') {
+        throw new Error(
+          'fakeFirestore: startAfter() on FieldPath.documentId() requires a document id string.'
+        );
+      }
+      const first = docs.findIndex((d) => d.id > cursor);
+      if (first === -1) docs.length = 0;
+      else docs.splice(0, first);
+    }
+    if (limits[0]) {
+      docs.length = Math.min(docs.length, limits[0].count);
     }
     return new QuerySnapshot(docs);
   }
@@ -249,6 +351,23 @@ class Store {
     this.collections = new Map();
     this.calls = [];
     this.clock = clock;
+    // Per-document commit counter. A transaction records the version it read
+    // and refuses to commit if a later write changed it -- the property two
+    // concurrent transactions depend on. Absent means version 0.
+    this.versions = new Map();
+  }
+
+  versionKey(collection, id) {
+    return `${collection}/${id}`;
+  }
+
+  versionOf(collection, id) {
+    return this.versions.get(this.versionKey(collection, id)) || 0;
+  }
+
+  bumpVersion(collection, id) {
+    const key = this.versionKey(collection, id);
+    this.versions.set(key, (this.versions.get(key) || 0) + 1);
   }
 
   bucket(name) {
@@ -272,10 +391,12 @@ class Store {
     } else {
       bucket.set(id, clone(data));
     }
+    this.bumpVersion(collection, id);
   }
 
   remove(collection, id) {
     this.bucket(collection).delete(id);
+    this.bumpVersion(collection, id);
   }
 
   seed(collection, id, data) {
@@ -285,6 +406,120 @@ class Store {
     // res.json() as an ISO string while a freshly applied application returned a
     // Timestamp object, and the two would disagree inside the same fake.
     this.bucket(collection).set(id, resolveValue(data));
+    this.bumpVersion(collection, id);
+  }
+
+  /**
+   * STAGE 1K, extended by STAGE 3C.1.3. Optimistic Firestore transaction with
+   * the two properties the services rely on:
+   *
+   *   1. ALL READS BEFORE ALL WRITES. `tx.get` after the first `tx.set`/`update`
+   *      throws FAILED_PRECONDITION (code 9), exactly as the real SDK does.
+   *   2. CONFLICT DETECTION. Each `tx.get` records the document's commit version.
+   *      At commit, if any read document has been written since, the transaction
+   *      is retried (bounded), and after the bound it aborts with ABORTED (code
+   *      10). This is what makes two genuinely concurrent transactions resolve
+   *      to one winner and one loser instead of both committing.
+   *
+   * Writes are buffered and applied together at commit; nothing is written if
+   * the callback throws or if commit validation fails, so a failed transaction
+   * leaves no partial state. The callback must be retry-safe: it may run more
+   * than once, so it must not perform external side effects.
+   *
+   * The real SDK is stronger than this (server-side snapshot isolation,
+   * automatic retry with backoff); the fake models the observable contract the
+   * tests depend on and says so rather than claiming to be Firestore.
+   */
+  async runTransaction(callback) {
+    this.calls.push({ op: 'runTransaction' });
+    const MAX_ATTEMPTS = 5;
+
+    for (let attempt = 1; ; attempt += 1) {
+      const reads = [];
+      const pending = [];
+      let writesStarted = false;
+
+      const tx = {
+        get: async (ref) => {
+          if (!(ref instanceof DocRef)) {
+            throw new Error('fakeFirestore: transaction.get only supports a document reference');
+          }
+          if (writesStarted) {
+            const err = new Error(
+              `9 FAILED_PRECONDITION: Firestore transactions require all reads to be executed before all writes: ${ref.path}`
+            );
+            err.code = 9;
+            throw err;
+          }
+          reads.push({
+            collection: ref._collection,
+            id: ref.id,
+            version: this.versionOf(ref._collection, ref.id),
+          });
+          return new DocSnapshot(ref.id, this.read(ref._collection, ref.id));
+        },
+        set: (ref, data) => {
+          writesStarted = true;
+          pending.push({ type: 'set', collection: ref._collection, id: ref.id, data: resolveValue(data) });
+        },
+        update: (ref, data) => {
+          writesStarted = true;
+          pending.push({ type: 'update', collection: ref._collection, id: ref.id, data });
+        },
+        create: (ref, data) => {
+          writesStarted = true;
+          pending.push({ type: 'create', collection: ref._collection, id: ref.id, data: resolveValue(data) });
+        },
+        delete: (ref) => {
+          writesStarted = true;
+          pending.push({ type: 'delete', collection: ref._collection, id: ref.id });
+        },
+      };
+
+      const result = await callback(tx);
+
+      // Contention: a document read by this transaction changed before commit.
+      const conflicted = reads.some(
+        (read) => this.versionOf(read.collection, read.id) !== read.version
+      );
+      if (conflicted) {
+        if (attempt < MAX_ATTEMPTS) continue;
+        const err = new Error('10 ABORTED: too much contention on these documents; please try again');
+        err.code = 10;
+        throw err;
+      }
+
+      // Commit. A create that now collides, or an update to a missing document,
+      // throws BEFORE anything is written -- matching "all-or-nothing".
+      const staged = pending.map((entry) => ({ ...entry, prior: this.read(entry.collection, entry.id) }));
+      for (const entry of staged) {
+        if (entry.type === 'set' || entry.type === 'delete') continue;
+        if (entry.type === 'create' && entry.prior !== undefined) throw alreadyExists(`${entry.collection}/${entry.id}`);
+        if (entry.type === 'update' && entry.prior === undefined) throw notFound(`${entry.collection}/${entry.id}`);
+      }
+      for (const entry of staged) {
+        this.calls.push({ op: entry.type, path: `${entry.collection}/${entry.id}` });
+        if (entry.type === 'delete') {
+          this.remove(entry.collection, entry.id);
+        } else if (entry.type === 'set' || entry.type === 'create') {
+          this.write(entry.collection, entry.id, entry.data, false);
+        } else {
+          const resolved = resolveValue(entry.data);
+          const next = { ...entry.prior };
+          for (const key of Object.keys(resolved)) {
+            const original = entry.data[key];
+            if (original && original.__sentinel === INCREMENT) {
+              const existing = typeof entry.prior[key] === 'number' ? entry.prior[key] : 0;
+              next[key] = existing + original.n;
+            } else {
+              next[key] = resolved[key];
+            }
+          }
+          this.write(entry.collection, entry.id, next, false);
+        }
+      }
+      return result;
+    }
   }
 
   collection(name) {
@@ -294,6 +529,7 @@ class Store {
   reset() {
     this.collections = new Map();
     this.calls = [];
+    this.versions = new Map();
   }
 }
 
@@ -312,6 +548,8 @@ function createFakeFirebase(options = {}) {
 
   const firestoreFn = () => db;
   firestoreFn.FieldValue = { increment, serverTimestamp };
+  // STAGE 2G: FieldPath.documentId() for document-id-ordered backfill queries.
+  firestoreFn.FieldPath = { documentId: () => DOCUMENT_ID_FIELD };
 
   // ---- Auth double -------------------------------------------------------
   const tokens = new Map(); // token -> decoded claims
@@ -320,7 +558,11 @@ function createFakeFirebase(options = {}) {
 
   function issueToken(uid, claims = {}) {
     const token = `token-${uid}-${tokens.size + 1}`;
-    tokens.set(token, { uid, ...claims });
+    // Real Firebase ID tokens always carry an `email_verified` claim (false until
+    // the account is confirmed), so the double emits one too and defaults it to
+    // verified -- the state every `client.authed()` caller models. A test that
+    // needs an unverified caller passes `{ email_verified: false }` explicitly.
+    tokens.set(token, { email_verified: true, uid, ...claims });
     return token;
   }
 

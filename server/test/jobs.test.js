@@ -559,3 +559,126 @@ test('GET /jobs leaves a legacy Filled status readable', async () => {
   assert.equal(res.status, 200);
   assert.equal(res.body.job.status, 'Filled');
 });
+
+/*
+ * STAGE 12.1A. Optional in-memory filters on GET /jobs. All of these run over
+ * the same full-collection read the endpoint has always made, so they add no
+ * Firestore operator, index, schema field, sorting or pagination. The two
+ * "no parameters" tests above remain the regression pin for the unfiltered
+ * contract; the cases below only exercise the new query string.
+ */
+
+test('GET /jobs?q= matches a partial title case-insensitively', async () => {
+  client.seed('jobs', 'job-1', job({ title: 'Fix the leaking tap' }));
+  client.seed('jobs', 'job-2', job({ title: 'Repaint the fence' }));
+
+  const res = await api.get(`/jobs?q=${encodeURIComponent('LEAK')}`);
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.jobs.map((j) => j.id), ['job-1']);
+});
+
+test('GET /jobs?q= matches description and location', async () => {
+  client.seed('jobs', 'job-1', job({ title: 'A', description: 'Need a wiring expert', location: 'Abuja' }));
+  client.seed('jobs', 'job-2', job({ title: 'B', description: 'Something else', location: 'Kano' }));
+  client.seed('jobs', 'job-3', job({ title: 'C', description: 'Plain', location: 'Ibadan' }));
+
+  const byDescription = await api.get(`/jobs?q=${encodeURIComponent('WIRING')}`);
+  assert.equal(byDescription.status, 200);
+  assert.deepEqual(byDescription.body.jobs.map((j) => j.id), ['job-1']);
+
+  const byLocation = await api.get(`/jobs?q=${encodeURIComponent('ibadan')}`);
+  assert.equal(byLocation.status, 200);
+  assert.deepEqual(byLocation.body.jobs.map((j) => j.id), ['job-3']);
+});
+
+test('GET /jobs?q= returns an empty array when nothing matches', async () => {
+  client.seed('jobs', 'job-1', job());
+
+  const res = await api.get(`/jobs?q=${encodeURIComponent('nonexistent-term')}`);
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { jobs: [] });
+});
+
+test('GET /jobs?status= filters case-insensitively, including legacy Filled', async () => {
+  client.seed('jobs', 'open-1', job({ status: 'open' }));
+  client.seed('jobs', 'filled-1', job({ status: 'filled' }));
+  client.seed('jobs', 'legacy-1', job({ status: 'Filled' }));
+  client.seed('jobs', 'closed-1', job({ status: 'closed' }));
+
+  const open = await api.get('/jobs?status=OPEN');
+  assert.equal(open.status, 200);
+  assert.deepEqual(open.body.jobs.map((j) => j.id), ['open-1']);
+
+  // The legacy title-cased 'Filled' must be found by a filled filter, in either
+  // spelling of the filter value.
+  const filled = await api.get('/jobs?status=filled');
+  assert.equal(filled.status, 200);
+  assert.deepEqual(filled.body.jobs.map((j) => j.id).sort(), ['filled-1', 'legacy-1']);
+
+  const legacySpelling = await api.get('/jobs?status=Filled');
+  assert.equal(legacySpelling.status, 200);
+  assert.deepEqual(legacySpelling.body.jobs.map((j) => j.id).sort(), ['filled-1', 'legacy-1']);
+});
+
+test('GET /jobs?jobType= filters by exact, case-insensitive match', async () => {
+  client.seed('jobs', 'p-1', job({ jobType: 'plumbing' }));
+  client.seed('jobs', 'p-2', job({ jobType: 'Plumbing' }));
+  client.seed('jobs', 'e-1', job({ jobType: 'electrical' }));
+
+  const res = await api.get('/jobs?jobType=PLUMBING');
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.jobs.map((j) => j.id).sort(), ['p-1', 'p-2']);
+
+  // Exact, not a substring: a prefix of a longer type matches nothing.
+  const prefix = await api.get('/jobs?jobType=plumb');
+  assert.equal(prefix.status, 200);
+  assert.deepEqual(prefix.body.jobs, []);
+});
+
+test('GET /jobs combines keyword and status filters with AND', async () => {
+  client.seed('jobs', 'match', job({ title: 'Fix the tap', status: 'open' }));
+  client.seed('jobs', 'wrong-status', job({ title: 'Fix the door', status: 'closed' }));
+  client.seed('jobs', 'wrong-term', job({ title: 'Paint the wall', status: 'open' }));
+
+  const res = await api.get(`/jobs?q=${encodeURIComponent('fix')}&status=open`);
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.jobs.map((j) => j.id), ['match']);
+});
+
+test('GET /jobs ignores empty and whitespace-only parameters', async () => {
+  client.seed('jobs', 'job-1', job());
+  client.seed('jobs', 'job-2', job({ title: 'Two' }));
+
+  for (const suffix of ['?q=', '?q=%20%20', '?status=', '?jobType=%20', '?q=&status=&jobType=']) {
+    const res = await api.get(`/jobs${suffix}`);
+    assert.equal(res.status, 200, `expected 200 for ${suffix}`);
+    assert.equal(res.body.jobs.length, 2, `expected all jobs for ${suffix}`);
+  }
+});
+
+test('GET /jobs with no parameters returns every job, including sparse documents', async () => {
+  client.seed('jobs', 'full', job());
+  client.seed('jobs', 'sparse', { title: 'Only a title', postedBy: 'employer-1' });
+
+  const res = await api.get('/jobs');
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(
+    res.body.jobs.map((j) => j.id).sort(),
+    ['full', 'sparse']
+  );
+});
+
+test('GET /jobs keyword search skips jobs whose searchable fields are missing or not strings', async () => {
+  client.seed('jobs', 'sparse', { title: 'Only a title', postedBy: 'employer-1' });
+  client.seed('jobs', 'numeric', job({ title: 123 }));
+
+  const res = await api.get(`/jobs?q=${encodeURIComponent('only a title')}`);
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.jobs.map((j) => j.id), ['sparse']);
+});

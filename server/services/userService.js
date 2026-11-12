@@ -48,9 +48,20 @@
 // No shared error system is introduced: the single error class below
 // exists only so the controller can reproduce the existing 404 body.
 
+const crypto = require('crypto');
 const { admin } = require('../config/firebase');
 const userRepository = require('../repositories/userRepository');
 const authRepository = require('../repositories/authRepository');
+// Cloudinary signing for profile-photo uploads. `signUploadRequest` is the same
+// one-shot signer task submissions use (config/cloudinary.js); the api secret is
+// read and used inside that module and never returned here.
+const {
+    signUploadRequest,
+    generateSignedDownloadUrl,
+    verifyUploadedAsset,
+    deleteUploadedAsset,
+    qualifyFolder,
+} = require('../config/cloudinary');
 
 // Fields a caller is allowed to change on their own profile. Anything not on
 // this list is ignored, so a user cannot escalate their own role or overwrite
@@ -74,6 +85,12 @@ const ALLOWED_PROFILE_FIELDS = [
   'availability',
   'companyName',
   'jobTypes',
+  // STAGE 12.11. Employees can store a private resume reference on their profile
+  // for reuse on applications. The shape is `{ publicId, name, resourceType }`
+  // and there is no `url` -- that keeps it unexposed and consistent with the
+  // application-side resume reference.
+  'resume',
+  'savedJobs',
 ];
 
 /**
@@ -83,6 +100,16 @@ const ALLOWED_PROFILE_FIELDS = [
  * carried on the instance rather than hard-coded here.
  */
 class UserNotFoundError extends Error {}
+
+/**
+ * A supplied profile field failed its shape check. Surfaces as a 400.
+ *
+ * Stage 12.6 added the first such check: `savedJobs` must be an array of
+ * non-empty strings. This is a distinct class from UserNotFoundError so the
+ * controller can answer 400 rather than 404, mirroring how jobService raises
+ * JobValidationError for a bad payload.
+ */
+class UserValidationError extends Error {}
 
 // Fields readable on someone else's profile, added in Stage 5C.
 //
@@ -172,6 +199,14 @@ const toPublicProfile = (user) => {
  */
 const registerUser = async (uid, payload) => {
   const { fullName, phone, role } = payload;
+
+  // STAGE 1. Admin authority is a Firebase custom claim, never a document field.
+  // Registration must not be able to mint an admin role even as inert profile
+  // data, because a later feature reading `users.role` would inherit the lie.
+  // Refused before the Auth update, so a rejected registration leaves no orphan.
+  if (typeof role === 'string' && role.trim().toLowerCase() === 'admin') {
+    throw new UserValidationError('The admin role cannot be self-assigned');
+  }
 
   // Add the same formatting function as your frontend
   const formatPhoneNumber = (phone) => {
@@ -337,8 +372,63 @@ const updateUserProfile = async (uid, userData) => {
     throw new UserNotFoundError('User not found');
   }
 
-  // Extract profilePic from userData so it can be written to both stores.
-  const { profilePic, ...rest } = userData;
+  // Extract profilePic from userData so it can be written to both stores. The
+  // public id is extracted alongside it (STAGE 12.14) so it is not swept up by the
+  // allow-list loop below: unlike an ordinary field it is validated, and unlike
+  // profilePic it is stored to Firestore only.
+  const { profilePic, profilePicPublicId, ...rest } = userData;
+
+  // STAGE 12.6: `savedJobs` is the one allow-listed field whose value the rest
+  // of the app then trusts as identifiers -- JobSplitView.jsx builds a Set from
+  // it and compares job ids. A malformed value (a bare string, a number, an
+  // array holding non-strings or blanks) would either silently fail to match or
+  // corrupt the stored list, so it is rejected here rather than written. The
+  // allow-list still filters *which* keys are accepted; this checks the shape of
+  // the one that carries semantics.
+  if (Object.prototype.hasOwnProperty.call(rest, 'savedJobs')) {
+    const savedJobs = rest.savedJobs;
+    const isValidSavedJobs =
+      Array.isArray(savedJobs) &&
+      savedJobs.every((jobId) => typeof jobId === 'string' && jobId.trim().length > 0);
+
+    if (!isValidSavedJobs) {
+      throw new UserValidationError('savedJobs must be an array of non-empty string job IDs');
+    }
+  }
+
+  // STAGE 12.11. Validate a profile-stored resume reference. When present, it
+  // must be an object with { publicId, name, resourceType } and resourceType must
+  // be 'raw'. The field is optional: absent leaves it alone. No `url` is accepted
+  // or stored.
+  if (Object.prototype.hasOwnProperty.call(rest, 'resume')) {
+    const resumeVal = rest.resume;
+    if (resumeVal !== null && resumeVal !== undefined) {
+      const isValid =
+        resumeVal &&
+        typeof resumeVal === 'object' &&
+        !Array.isArray(resumeVal) &&
+        typeof resumeVal.publicId === 'string' &&
+        resumeVal.publicId.trim().length > 0 &&
+        typeof resumeVal.name === 'string' &&
+        resumeVal.name.trim().length > 0 &&
+        resumeVal.resourceType === 'raw';
+      if (!isValid) {
+        throw new UserValidationError('resume must be a valid private resume reference');
+      }
+      rest.resume = {
+        publicId: resumeVal.publicId.trim(),
+        name: resumeVal.name.trim(),
+        resourceType: 'raw',
+      };
+
+      // STAGE 12.13. Shape is checked above; provenance is checked here. The
+      // reference must name a file under the caller's own `resumes/{uid}/`
+      // folder AND that file must exist in Cloudinary before it is stored. See
+      // verifyOwnedResume below for why both are needed.
+      await verifyOwnedResume(rest.resume, uid);
+    }
+    // If null is passed, allow-list will write null; preserving behavior.
+  }
 
   const firestoreData = {};
   for (const field of ALLOWED_PROFILE_FIELDS) {
@@ -362,8 +452,70 @@ const updateUserProfile = async (uid, userData) => {
   // The truthiness guard is deliberate and matches the Auth update below: an
   // absent, empty or undefined profilePic changes nothing, so an update that
   // does not mention profilePic behaves exactly as it did before this stage.
+  //
+  // STAGE 12.14. When the caller also supplies the Cloudinary public id of the
+  // photo it just uploaded, it is stored beside the URL so a future replacement can
+  // delete the asset this one supersedes without having to re-derive the id from
+  // the URL. It is kept only when it names an asset under the caller's own
+  // `profilePics/{uid}/` folder -- a malformed or foreign id is dropped rather than
+  // stored, so no later cleanup can be pointed at an asset this account does not
+  // own. The field is optional: an older client that sends only the URL still gets
+  // its profilePic written, exactly as before.
+  const incomingProfilePicPublicId =
+    typeof profilePicPublicId === 'string' ? profilePicPublicId.trim() : '';
+
+  const isLegitimateProfilePhotoUrl = (url, userId) => {
+    if (typeof url !== 'string' || url.trim() === '') return false;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return false;
+    }
+    if (parsed.hostname !== 'res.cloudinary.com') return false;
+    const folder = profilePhotoFolder(userId);
+    const marker = `/${folder}/`;
+    const idx = parsed.pathname.indexOf(marker);
+    if (idx === -1) return false;
+    let candidate = parsed.pathname.slice(idx + 1);
+    try {
+      candidate = decodeURIComponent(candidate);
+    } catch {
+      return false;
+    }
+    candidate = candidate.replace(/\.[^./]+$/, '');
+    if (!candidate.startsWith(`${folder}/`) || candidate.includes('..')) return false;
+    return true;
+  };
+
+  let newProfilePicPublicId = '';
+  if (incomingProfilePicPublicId) {
+    if (!isOwnedProfilePhoto(incomingProfilePicPublicId, uid)) {
+      throw new UserValidationError('profilePicPublicId must reference an asset owned by this user');
+    }
+    newProfilePicPublicId = incomingProfilePicPublicId;
+  }
+
+
+  let profilePicValidationError = null;
+  if (profilePic && !isLegitimateProfilePhotoUrl(profilePic, uid)) {
+    profilePicValidationError = new UserValidationError('profilePic must be a legitimate uploaded profile photo for this user');
+  }
+  if (profilePicValidationError) {
+    throw profilePicValidationError;
+  }
+
   if (profilePic) {
     firestoreData.profilePic = profilePic;
+
+    if (newProfilePicPublicId) {
+      firestoreData.profilePicPublicId = newProfilePicPublicId;
+    } else {
+      const derived = deriveProfilePhotoPublicId(profilePic, uid);
+      if (derived && isOwnedProfilePhoto(derived, uid)) {
+        firestoreData.profilePicPublicId = derived;
+      }
+    }
   }
 
   // Update Firebase Auth user profile if profilePic is provided
@@ -377,14 +529,360 @@ const updateUserProfile = async (uid, userData) => {
   if (Object.keys(firestoreData).length > 0) {
     await userRepository.updateUserFields(uid, firestoreData);
   }
+
+  // STAGE 12.14. Only once BOTH writes have succeeded is the photo this update
+  // replaced removed from Cloudinary. `userSnap` still holds the document as it was
+  // read at the top, so the target is the previously stored value and never anything
+  // from the request. Nothing here runs when no new photo was supplied, and the
+  // delete logs and swallows its own failures, so a cleanup problem cannot fail an
+  // update that has already been committed.
+  if (profilePic) {
+    await deleteReplacedProfilePhoto(uid, userSnap.data(), {
+      url: profilePic,
+      publicId: newProfilePicPublicId,
+    });
+  }
+};
+
+/**
+ * The Cloudinary resource type a profile photo is uploaded as.
+ *
+ * `image`, not `raw`: a profile photo is a renderable picture, and the image
+ * resource class is what makes Cloudinary reject a non-image (a text file posted
+ * to the image endpoint fails) and what produces the delivery URL the avatar
+ * components already render. The task-submission signer uses `raw` for the
+ * opposite reason; the two must not be confused, which is why this constant is
+ * named here rather than reused from taskService.
+ *
+ * Exported for the client, which names the same type when it builds the upload URL,
+ * and returned by signProfilePhotoUpload so the client never has to guess it.
+ */
+const PROFILE_PHOTO_RESOURCE_TYPE = 'image';
+
+/**
+ * The image formats a profile photo may be uploaded as.
+ *
+ * Signed into the upload request, so Cloudinary enforces it server-side: a file
+ * whose format is not on this list is refused before it is stored, even though the
+ * bytes travel straight from the browser and never through this API. Kept to the
+ * three common web image formats rather than an open list. The value is returned to
+ * the client because a signed parameter must be echoed back unchanged or Cloudinary
+ * rejects the signature.
+ */
+const PROFILE_PHOTO_FORMATS = 'jpg,jpeg,png,webp';
+
+/**
+ * The image formats a resume may be uploaded as.
+ * Resumes must be PDF files initially.
+ */
+const RESUME_FORMATS = 'pdf';
+
+/**
+ * The resource type for resume uploads. A resume is a document, so `raw` is the
+ * appropriate class and avoids public image transformations.
+ */
+const RESUME_RESOURCE_TYPE = 'raw';
+
+/**
+ * The folder one user's profile photos are uploaded into.
+ *
+ * `profilePics/{uid}` -- the same prefix the Firebase Storage upload used, kept so
+ * an operator inspecting the media library sees the same layout the code used to
+ * write. Built from the caller's token-derived uid and never from the request, so
+ * the signature covers "this user's folder" and no client can point its upload at
+ * another account. See signProfilePhotoUpload.
+ */
+const profilePhotoFolder = (uid) => qualifyFolder(`profilePics/${uid}`);
+
+/**
+ * STAGE 12.14. Recovers the Cloudinary public id from a stored profile-photo URL,
+ * but ONLY when it can be read back safely.
+ *
+ * The profile document has always stored a `profilePic` delivery URL and, before
+ * this stage, never the public id that URL addresses. A Cloudinary image URL has
+ * the shape `https://res.cloudinary.com/{cloud}/image/upload/{publicId}.{ext}`
+ * (optionally with transformation segments before the id), so the id can be
+ * recovered from the path -- but only when every check passes:
+ *
+ *   * the host is `res.cloudinary.com`, so the URL is one of ours to delete
+ *   * the path contains the caller's own `/profilePics/{uid}/` folder, so this can
+ *     never derive another user's asset
+ *   * the candidate keeps that folder as a real prefix and holds no `..` segment
+ *
+ * Returns the public id (folder + name, extension stripped) or null when any check
+ * fails. Callers must treat null as "not safely identifiable" and delete nothing:
+ * a profile such as the fixtures' `https://example.test/p.png`, or any URL from a
+ * different host, is left alone rather than guessed at.
+ */
+const deriveProfilePhotoPublicId = (url, uid) => {
+  if (typeof url !== 'string' || url.trim() === '') return null;
+
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+
+  if (parsed.hostname !== 'res.cloudinary.com') return null;
+
+  const folder = profilePhotoFolder(uid);
+  const marker = `/${folder}/`;
+  const index = parsed.pathname.indexOf(marker);
+  if (index === -1) return null;
+
+  let candidate = parsed.pathname.slice(index + 1);
+  try {
+    candidate = decodeURIComponent(candidate);
+  } catch {
+    return null;
+  }
+
+  // A delivery URL carries a format extension; a public id does not.
+  candidate = candidate.replace(/\.[^./]+$/, '');
+
+  if (!candidate.startsWith(`${folder}/`)) return null;
+  if (candidate.includes('..')) return null;
+
+  return candidate;
+};
+
+/**
+ * STAGE 12.14. True when a public id names an asset under the caller's own
+ * `profilePics/{uid}/` folder. Shared by the write validation and the cleanup
+ * path so the ownership string checks live in one place.
+ */
+const isOwnedProfilePhoto = (publicId, uid) => {
+  if (typeof publicId !== 'string' || publicId.trim() === '') return false;
+
+  const folder = profilePhotoFolder(uid);
+  return publicId.startsWith(`${folder}/`) && !publicId.includes('..');
+};
+
+/**
+ * STAGE 12.14. Deletes the profile photo a user has just replaced.
+ *
+ * Called by updateUserProfile AFTER both the Auth and Firestore writes have
+ * succeeded, so a failed profile update never removes the current avatar. The
+ * target is always the PREVIOUSLY stored value -- never anything from the request
+ * -- and the delete is skipped (removing nothing) whenever it cannot be proven to
+ * be this user's own asset:
+ *
+ *   * there is no previous photo to delete
+ *   * the previous photo is the one being written (the same image was re-chosen,
+ *     so there is nothing to clean up)
+ *   * the previous value is not a Cloudinary URL under `profilePics/{uid}/`,
+ *     including a legacy URL from another host
+ *
+ * A failure from Cloudinary is swallowed and logged: the profile update has
+ * already been committed, and a failed cleanup must not turn a success into the
+ * error message the user sees. See deleteUploadedAsset for why the delete itself
+ * is server-side and never driven by a client-supplied id.
+ */
+const deleteReplacedProfilePhoto = async (uid, previous, next) => {
+  const previousPublicId =
+    (typeof previous.profilePicPublicId === 'string' && previous.profilePicPublicId.trim()) ||
+    deriveProfilePhotoPublicId(previous.profilePic, uid);
+
+  if (!previousPublicId) return;
+
+  const nextPublicId =
+    (typeof next.publicId === 'string' && next.publicId.trim()) ||
+    deriveProfilePhotoPublicId(next.url, uid);
+
+  // The user re-selected the same image: there is nothing to clean up.
+  if (nextPublicId && nextPublicId === previousPublicId) return;
+
+  // The target must be this user's own asset. Compared here rather than relying on
+  // the caller, so a legacy or tampered document cannot point the delete elsewhere.
+  if (!isOwnedProfilePhoto(previousPublicId, uid)) return;
+
+  try {
+    await deleteUploadedAsset(previousPublicId, { resourceType: PROFILE_PHOTO_RESOURCE_TYPE });
+  } catch (error) {
+    console.error('Failed to delete replaced profile photo from Cloudinary:', error);
+  }
+};
+
+/**
+ * The folder one user's resumes are uploaded into. Private by naming, and access
+ * will be controlled by our download endpoint.
+ */
+const resumeFolder = (uid) => qualifyFolder(`resumes/${uid}`);
+
+/**
+ * Mints the signed payload the browser needs to upload one profile photo to
+ * Cloudinary, after the caller has been authenticated.
+ *
+ * Called from the controller behind `protect` only. There is no ownership guard
+ * because there is nothing to own on the request: the folder is derived from the
+ * verified token's uid (req.user.uid), which is the whole authorization rule --
+ * a user signs an upload for their own folder and for no other, because the
+ * signature covers that string and cannot be rewritten without the api secret.
+ * The endpoint therefore takes no body and reads no user id from the request.
+ *
+ * WHY THE PUBLIC ID IS MINTED HERE, like the task signer: the client supplies no
+ * path, folder or name of its own, so there is nothing it could set to redirect the
+ * upload at another user's folder or reuse the signature for a second target. The
+ * random suffix keeps a replaced avatar from colliding with the one it replaces
+ * (Cloudinary's default `overwrite: false` would otherwise refuse a reused id), and
+ * it means the returned secure_url is unique per upload rather than a stable URL a
+ * browser would serve from cache.
+ *
+ * Returns exactly what the browser needs: the cloud and key to address, the
+ * timestamp and signature that make the request acceptable, the folder and public
+ * id the signature covers, the resource type that selects the upload endpoint, and
+ * the allowed formats that were signed in. The api secret never leaves
+ * config/cloudinary and is not part of this object.
+ *
+ * Throws CloudinaryConfigurationError when the environment is incomplete; the
+ * controller turns that into a 503.
+ */
+const signProfilePhotoUpload = (uid) => {
+  const folder = profilePhotoFolder(uid);
+  const publicId = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+
+  const signed = signUploadRequest({
+    folder,
+    public_id: publicId,
+    allowed_formats: PROFILE_PHOTO_FORMATS,
+  });
+
+  return {
+    cloudName: signed.cloudName,
+    apiKey: signed.apiKey,
+    timestamp: signed.timestamp,
+    signature: signed.signature,
+    folder,
+    publicId,
+    resourceType: PROFILE_PHOTO_RESOURCE_TYPE,
+    allowedFormats: PROFILE_PHOTO_FORMATS,
+  };
+};
+
+/**
+ * STAGE 12.12. Mints a signed upload payload for a private resume. The upload
+ * must go to the caller's own resume folder, use resource type `raw`, and allow
+ * only PDF. The signature covers folder, public_id and allowed_formats.
+ */
+const signResumeUpload = (uid) => {
+  const folder = resumeFolder(uid);
+  const publicId = `resume-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+
+  const signed = signUploadRequest({
+    folder,
+    public_id: publicId,
+    allowed_formats: RESUME_FORMATS,
+  });
+
+  return {
+    cloudName: signed.cloudName,
+    apiKey: signed.apiKey,
+    timestamp: signed.timestamp,
+    signature: signed.signature,
+    folder,
+    publicId,
+    resourceType: RESUME_RESOURCE_TYPE,
+    allowedFormats: RESUME_FORMATS,
+  };
+};
+
+/**
+ * Build a private resume reference from stored values. No URL allowed.
+ */
+const buildPrivateResumeRef = (resume) => {
+  if (!resume || typeof resume !== 'object' || Array.isArray(resume)) return null;
+  const publicId = typeof resume.publicId === 'string' ? resume.publicId.trim() : '';
+  const name = typeof resume.name === 'string' ? resume.name.trim() : '';
+  const resourceType = typeof resume.resourceType === 'string' ? resume.resourceType.trim() : '';
+  if (!publicId || !name || resourceType !== RESUME_RESOURCE_TYPE) return null;
+  return { publicId, name, resourceType };
+};
+
+/**
+ * STAGE 12.13. Confirms a profile resume reference names a real file the caller
+ * owns before it is persisted. Mirrors applicationService.verifyOwnedResume; the
+ * two live on their own services because each resource has its own error class
+ * and its own validation wording.
+ *
+ * OWNERSHIP: an upload this server signed for the caller is stored under
+ * `resumes/{uid}/` (resumeFolder below), so the public id the browser hands back
+ * must begin with that string. A reference naming another folder -- including
+ * one that only passes a naive prefix test via a `..` segment -- is rejected.
+ * EXISTENCE: verifyUploadedAsset confirms Cloudinary actually holds the asset,
+ * so a hand-made id cannot be stored to 404 on every later download.
+ *
+ * Throws UserValidationError (a 400) for either failure. An unconfigured server
+ * (CloudinaryConfigurationError from verifyUploadedAsset) propagates as a 500:
+ * it could not have signed the upload in the first place.
+ */
+const verifyOwnedResume = async (reference, uid) => {
+  const prefix = `${resumeFolder(uid)}/`;
+
+  if (!reference.publicId.startsWith(prefix) || reference.publicId.includes('..')) {
+    throw new UserValidationError('Resume does not belong to you');
+  }
+
+  const exists = await verifyUploadedAsset(reference.publicId, { resourceType: RESUME_RESOURCE_TYPE });
+  if (!exists) {
+    throw new UserValidationError('Resume file could not be found');
+  }
+};
+
+/**
+ * Generate a short-lived signed download URL for a private resume reference.
+ * Throws CloudinaryConfigurationError if not configured.
+ */
+const getResumeDownloadUrl = (resumeRef) => {
+  const ref = buildPrivateResumeRef(resumeRef);
+  if (!ref) throw new UserValidationError('Invalid resume reference');
+  const url = generateSignedDownloadUrl(ref.publicId, { expiresInSeconds: 300 });
+  return { url, name: ref.name };
+};
+
+/**
+ * STAGE 12.12.1. Reads the caller's own stored resume reference and mints a
+ * short-lived signed download URL for it.
+ *
+ * The asset id is never taken from the request: it is read from the caller's own
+ * profile document, selected by the uid on the verified token, so an account can
+ * only ever sign a download for a resume it saved. Throws UserNotFoundError
+ * ('Resume not found') when the profile carries no valid resume, so the
+ * controller answers 404 through the existing sendFailure path. A missing
+ * profile is likewise a UserNotFoundError ('User not found'). Cloudinary's
+ * CloudinaryConfigurationError is left to propagate for the controller's 503.
+ */
+const getProfileResumeDownloadUrl = async (uid) => {
+  const userSnap = await userRepository.getUserById(uid);
+  if (!userSnap.exists) {
+    throw new UserNotFoundError('User not found');
+  }
+
+  const reference = buildPrivateResumeRef(userSnap.data().resume);
+  if (!reference) {
+    throw new UserNotFoundError('Resume not found');
+  }
+
+  const url = generateSignedDownloadUrl(reference.publicId, { expiresInSeconds: 300 });
+  return { url, name: reference.name };
 };
 
 module.exports = {
   ALLOWED_PROFILE_FIELDS,
   PUBLIC_PROFILE_FIELDS,
   UserNotFoundError,
+  UserValidationError,
   registerUser,
   registerProfile,
   getUser,
   updateUserProfile,
+  signProfilePhotoUpload,
+  signResumeUpload,
+  buildPrivateResumeRef,
+  getResumeDownloadUrl,
+  getProfileResumeDownloadUrl,
+  PROFILE_PHOTO_RESOURCE_TYPE,
+  PROFILE_PHOTO_FORMATS,
+  RESUME_RESOURCE_TYPE,
+  RESUME_FORMATS,
 };
