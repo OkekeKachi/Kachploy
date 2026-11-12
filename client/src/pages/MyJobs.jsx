@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { auth } from '../firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import api from '../api';
@@ -13,9 +14,58 @@ import {
     Trash2,
     Eye,
     Briefcase,
-    Building2,
+    AlertCircle,
 } from 'lucide-react';
-import EmployerNavbar from '../components/EmployerNavbar';
+import AppNavbar from '../components/AppNavbar';
+import Button from '../components/ui/Button';
+import Card from '../components/ui/Card';
+import Badge from '../components/ui/Badge';
+import EmptyState from '../components/ui/EmptyState';
+import { PageContainer, PageHeader } from '../components/ui/PageContainer';
+import { PageLoader } from '../components/ui/Spinner';
+import { useEmployerJobsQuery, useApplicationCountsQuery, useEmployerEmploymentsQuery } from '../useEmployerQueries';
+import queryKeys from '../queryKeys';
+
+/*
+  STAGE 11.7: presentation-only redesign.
+
+  The auth-scoped load (GET /users/getUser/:uid, GET /jobs/employer/:uid, the
+  count-only GET /applications/counts and the employments read), the legacy
+  `Filled` handling, the delete confirmation and every navigation destination are
+  unchanged. This stage only replaces the gradient header, the local status/action
+  class strings and the Material Icons with the shared AppNavbar/PageContainer/
+  PageHeader/Card/Badge/Button/EmptyState/PageLoader primitives, the Field-free
+  token palette and lucide-react icons.
+
+  The Button primitive renders a real <button>, so the three navigation actions
+  that must stay links (Details, View Apps / View Applicants, Manage Employees)
+  keep their <Link> semantics (middle-click / open-in-new-tab) via ActionLink
+  below, which reuses the same tokens rather than being migrated to a <button>.
+*/
+
+/*
+  A <Link> styled as a Button. Used for the card actions that are destinations
+  rather than events, so the anchor behaviour is preserved.
+*/
+const ActionLink = ({ to, variant = 'secondary', className = '', children }) => {
+    const variants = {
+        primary:
+            'border-transparent bg-accent text-foreground-inverse hover:bg-accent-hover',
+        secondary:
+            'border-border-strong bg-surface text-foreground hover:bg-surface-muted',
+        accent:
+            'border-transparent bg-accent-subtle text-accent-subtle-foreground hover:bg-accent-subtle/70',
+    };
+
+    return (
+        <Link
+            to={to}
+            className={`inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-md border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas lg:w-full ${variants[variant]} ${className}`}
+        >
+            {children}
+        </Link>
+    );
+};
 
 /**
  * STAGE 6E: the employer's own posted-jobs list, at `/my-jobs`.
@@ -29,12 +79,14 @@ import EmployerNavbar from '../components/EmployerNavbar';
  *   independent layers, and this page only ever requests its own uid.
  *
  * DATA
- *   GET /jobs/employer/:uid for the jobs, plus the count-only
- *   GET /applications/counts for per-job applicant totals. That is the Stage 5B
- *   arrangement EmployerDashboard already uses -- one count read instead of a
- *   per-job GET /applications/job/:jobId fan-out -- so this page makes the same
- *   two requests rather than inventing a third way to count. A counts failure
- *   degrades every job to 0 applicants, exactly as it does there.
+ *   Phase 3 of the data-fetching audit: the three reads (GET /jobs/employer/:uid,
+ *   the count-only GET /applications/counts for per-job applicant totals, and
+ *   the self-scoped employments read for per-job employee counts) are the
+ *   shared queries in useEmployerQueries, keyed by uid so a /dashboard ->
+ *   /my-jobs round trip reuses what the dashboard just loaded. Endpoints,
+ *   response fallbacks and the failure behaviour are unchanged: a counts
+ *   failure degrades every job to 0 applicants, an employments failure to 0
+ *   employees, and a jobs failure surfaces the error banner below.
  *
  * JOB STATUS
  *   `open`, `filled` and `closed` are the statuses that have writers. Legacy
@@ -51,22 +103,47 @@ import EmployerNavbar from '../components/EmployerNavbar';
  *   the searchable view stays where it already is.
  */
 
+// The one load-failure message, shared by the identity read below and the
+// jobs-query failure derived at render.
+const JOB_LOAD_ERROR = 'Your jobs could not be loaded. Please reload the page to try again.';
+
 const MyJobs = () => {
     const [user, setUser] = useState({});
-    const [jobs, setJobs] = useState([]);
-    const [isLoading, setIsLoading] = useState(true);
+    // The identity read's settlement, replacing the old isLoading flag for its
+    // half of the load. The jobs/counts/employments half is settled by the
+    // queries below.
+    const [identitySettled, setIdentitySettled] = useState(false);
     const [error, setError] = useState('');
     // Per-row delete progress, so one row's in-flight request cannot be mistaken
     // for another's.
     const [deletingId, setDeletingId] = useState(null);
     const navigate = useNavigate();
+    const queryClient = useQueryClient();
 
+    const uid = auth.currentUser ? auth.currentUser.uid : '';
+
+    // Phase 3 of the data-fetching audit: the posted-jobs list, the counts and
+    // the employments are shared queries (see useEmployerQueries). They are
+    // keyed by uid, so /dashboard -> /my-jobs reuses the dashboard's cache
+    // entries instead of re-requesting all three.
+    const jobsQuery = useEmployerJobsQuery(uid);
+    const countsQuery = useApplicationCountsQuery(uid);
+    const employmentsQuery = useEmployerEmploymentsQuery(uid);
+
+    // The identity half of the old load, kept as its own effect: this page has
+    // no profile-completion redirect and never had one, and `user` feeds the
+    // navbar's name/role only. The jobs/counts/employments reads that used to
+    // hang off this listener are the queries above -- they are independent of
+    // the identity document and do not wait for it, which is the one
+    // sequencing divergence from the old sequential chain (on an identity
+    // failure the old code showed the banner with an empty list; the list now
+    // still renders if its own read succeeds).
     useEffect(() => {
         let cancelled = false;
 
         const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
             if (!authUser) {
-                if (!cancelled) setIsLoading(false);
+                if (!cancelled) setIdentitySettled(true);
                 return;
             }
 
@@ -74,31 +151,14 @@ const MyJobs = () => {
                 const userRes = await api.get(`/users/getUser/${authUser.uid}`);
                 if (cancelled) return;
                 setUser(userRes.data.user || {});
-
-                const jobsRes = await api.get(`/jobs/employer/${authUser.uid}`);
-                if (cancelled) return;
-                const jobList = jobsRes.data.jobs || [];
-
-                // Same count-only read EmployerDashboard uses. A failure here is
-                // logged and leaves every count at 0 rather than failing the page.
-                let counts = {};
-                try {
-                    const countsRes = await api.get('/applications/counts');
-                    counts = countsRes.data.counts || {};
-                } catch (err) {
-                    console.error('Error fetching application counts:', err);
-                }
-
-                if (cancelled) return;
-                setJobs(jobList.map((job) => ({ ...job, applicantCount: counts[job.id] || 0 })));
                 setError('');
             } catch (err) {
                 console.error('Error loading jobs:', err);
                 if (!cancelled) {
-                    setError('Your jobs could not be loaded. Please reload the page to try again.');
+                    setError(JOB_LOAD_ERROR);
                 }
             } finally {
-                if (!cancelled) setIsLoading(false);
+                if (!cancelled) setIdentitySettled(true);
             }
         });
 
@@ -123,19 +183,13 @@ const MyJobs = () => {
         return JOB_STATUS_LABEL[status] || status;
     };
 
-    const getStatusBadge = (status) => {
-        const baseClasses = 'px-3 py-1 rounded-full text-xs font-semibold';
-        switch (status) {
-            case 'open':
-                return `${baseClasses} bg-green-100 text-green-800`;
-            case 'closed':
-                return `${baseClasses} bg-red-100 text-red-800`;
-            case 'filled':
-            case 'Filled':
-                return `${baseClasses} bg-blue-100 text-blue-800`;
-            default:
-                return `${baseClasses} bg-gray-100 text-gray-800`;
-        }
+    // STAGE 11.7: status -> shared Badge variant, matching EmployerDashboard's
+    // jobStatusBadgeVariant so the two employer views read the same way.
+    const jobStatusBadgeVariant = (status) => {
+        if (isJobFilled(status)) return 'primary';
+        if (status === 'open') return 'success';
+        if (status === 'closed') return 'danger';
+        return 'neutral';
     };
 
     /** Price is optional in the job document, so it is rendered only when present. */
@@ -155,8 +209,13 @@ const MyJobs = () => {
         setDeletingId(job.id);
         try {
             await api.delete(`/jobs/${job.id}`);
-            // Removed locally rather than refetched, mirroring EmployerDashboard.
-            setJobs((prev) => prev.filter((item) => item.id !== job.id));
+            // Removed from the cache directly rather than refetched, mirroring
+            // EmployerDashboard: the same immediate local removal the old
+            // setJobs filter did, with the counts and employments entries left
+            // alone.
+            queryClient.setQueryData(queryKeys.employerJobs(uid), (prev) =>
+                (prev || []).filter((item) => item.id !== job.id)
+            );
             setError('');
         } catch (err) {
             console.error('Error deleting job:', err);
@@ -166,225 +225,240 @@ const MyJobs = () => {
         }
     };
 
+    // Phase 3: the posted-jobs list with the per-job counts merged in -- the
+    // same mapping the old effect performed after its sequential chain, now a
+    // render-time derivation. A counts or employments read that failed (or has
+    // not landed) contributes 0, exactly as the old catch-to-{} paths did.
+    const jobList = jobsQuery.data || [];
+    const counts = countsQuery.data || {};
+    const employmentCounts = {};
+    (employmentsQuery.data || []).forEach((employment) => {
+        if (!employment.jobId) return;
+        employmentCounts[employment.jobId] = (employmentCounts[employment.jobId] || 0) + 1;
+    });
+    const jobs = jobList.map((job) => ({
+        ...job,
+        applicantCount: counts[job.id] || 0,
+        employeeCount: employmentCounts[job.id] || 0,
+    }));
+
+    // A jobs failure with no cached list drives the same banner the old
+    // load-failure path showed; a failure on top of cached data (a background
+    // revalidation that failed) keeps the list visible without the banner.
+    const jobsLoadFailed = jobsQuery.isError && !jobsQuery.data;
+    const bannerMessage = error || (jobsLoadFailed ? JOB_LOAD_ERROR : '');
+
+    // The old isLoading released only after identity AND the jobs/counts/
+    // employments chain had settled, counting as settled when there was no
+    // session at all. Same rule here -- with the uid guard because a disabled
+    // query stays in its pending state.
+    const isLoading =
+        !identitySettled ||
+        (Boolean(uid) && (jobsQuery.isPending || countsQuery.isPending || employmentsQuery.isPending));
+
     if (isLoading) {
-        return (
-            <div className="min-h-screen bg-gradient-to-br from-blue-50 to-gray-100 flex items-center justify-center">
-                <div className="flex flex-col items-center space-y-4">
-                    <div className="relative">
-                        <div className="animate-spin rounded-full h-16 w-16 border-4 border-gray-200"></div>
-                        <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-600 border-t-transparent absolute top-0 left-0"></div>
-                    </div>
-                    <div className="text-center">
-                        <p className="text-gray-700 font-medium">Loading...</p>
-                        <p className="text-gray-500 text-sm">Please wait while we get you going</p>
-                    </div>
-                </div>
-            </div>
-        );
+        return <PageLoader label="Loading your jobs…" />;
     }
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-gray-100">
-            <EmployerNavbar user={user} />
+        <div className="min-h-screen bg-canvas">
+            <AppNavbar user={user} />
 
-            <div className="max-w-7xl mx-auto bg-gradient-to-br from-blue-600 to-indigo-900 shadow-sm border-b px-4 sm:px-6 lg:px-6 py-4 sm:py-6 rounded-b-lg">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-4 sm:space-y-0">
-                        <div className="flex items-center space-x-3 sm:space-x-4">
-                            <div className="w-12 h-12 sm:w-16 sm:h-16 bg-gradient-to-br from-blue-400 to-blue-600 rounded-full flex items-center justify-center flex-shrink-0">
-                                <Building2 className="w-6 h-6 sm:w-8 sm:h-8 text-white" />
-                            </div>
-                            <div className="min-w-0 flex-1">
-                                <h1 className="text-lg sm:text-2xl font-bold text-white truncate">
-                                    My Jobs
-                                </h1>
-                                <p className="text-sm sm:text-base text-blue-100 hidden sm:block">
-                                    Every job you have posted
-                                </p>
-                            </div>
-                        </div>
-
-                        <div className="flex justify-end sm:justify-start">
-                            <button
-                                onClick={() => navigate('/post-job')}
-                                className="bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white px-4 sm:px-6 py-2 sm:py-3 rounded-lg font-semibold flex items-center space-x-2 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
-                            >
-                                <Plus className="w-4 h-4 sm:w-5 sm:h-5" />
-                                <span className="text-sm sm:text-base">Post New Job</span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                {error && (
-                    <p role="alert" className="text-red-600 mb-6">
-                        {error}
-                    </p>
-                )}
-
+            <PageContainer className="py-8">
                 <div className="space-y-6">
-                    <h2 className="text-xl font-bold text-gray-900">
-                        Your Job Postings ({jobs.length})
-                    </h2>
+                    <PageHeader
+                        title="My Jobs"
+                        description="Every job you have posted."
+                        actions={
+                            <Button onClick={() => navigate('/post-job')}>
+                                <Plus className="h-4 w-4" aria-hidden="true" />
+                                Post new job
+                            </Button>
+                        }
+                    />
 
-                    {jobs.length === 0 ? (
-                        <div className="bg-white rounded-xl shadow-lg p-12 text-center border border-gray-100">
-                            <Briefcase className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                                No jobs posted yet
-                            </h3>
-                            <p className="text-gray-600 mb-6">
-                                Start by posting your first job to attract talented candidates.
-                            </p>
-                            <button
-                                onClick={() => navigate('/post-job')}
-                                className="inline-flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold transition-colors duration-200"
-                            >
-                                <Plus className="w-5 h-5" />
-                                <span>Post Your First Job</span>
-                            </button>
+                    {bannerMessage && (
+                        <div
+                            role="alert"
+                            className="flex items-start gap-2 rounded-md bg-danger-subtle px-4 py-3 text-sm text-danger-subtle-foreground"
+                        >
+                            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                            <span>{bannerMessage}</span>
                         </div>
-                    ) : (
-                        <div className="grid gap-6">
-                            {jobs.map((job) => (
-                                <div
-                                    key={job.id}
-                                    className="bg-white rounded-xl shadow-lg border border-gray-100 p-6 hover:shadow-xl transition-all duration-200 hover:-translate-y-1"
-                                >
-                                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                                        <div className="flex-1">
-                                            <div className="flex items-start justify-between mb-3">
-                                                <h3 className="text-xl font-bold text-gray-900 mb-2">
-                                                    {job.title}
-                                                </h3>
-                                                <span className={getStatusBadge(job.status)}>
-                                                    {jobStatusLabel(job.status)}
-                                                </span>
-                                            </div>
+                    )}
 
-                                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-                                                <div className="flex items-center text-gray-600">
-                                                    <MapPin className="w-4 h-4 mr-2 text-gray-400" />
-                                                    <span className="text-sm">{job.location}</span>
-                                                </div>
-                                                <div className="flex items-center text-gray-600">
-                                                    <Calendar className="w-4 h-4 mr-2 text-gray-400" />
-                                                    {/* Jobs store ISO strings, so this is a
-                                                        direct parse rather than the
-                                                        Timestamp decode the task and
-                                                        application lists need. */}
-                                                    <span className="text-sm">
-                                                        {job.createdAt
-                                                            ? new Date(job.createdAt).toLocaleDateString()
-                                                            : 'Date not available'}
-                                                    </span>
-                                                </div>
-                                                <div className="flex items-center text-gray-600">
-                                                    <DollarSign className="w-4 h-4 mr-2 text-gray-400" />
-                                                    <span className="text-sm font-semibold">
-                                                        {priceLabel(job.price)}
-                                                    </span>
-                                                </div>
-                                                <div className="flex items-center text-gray-600">
-                                                    <Users className="w-4 h-4 mr-2 text-gray-400" />
-                                                    <span className="text-sm">
-                                                        {job.applicantCount} applicant
-                                                        {job.applicantCount !== 1 ? 's' : ''}
-                                                    </span>
-                                                </div>
-                                            </div>
+                    <div className="space-y-4">
+                        <h2 className="text-lg font-semibold text-foreground">
+                            Your job postings ({jobs.length})
+                        </h2>
 
-                                            {job.description && (
-                                                <p className="text-gray-600 text-sm leading-relaxed mb-4">
-                                                    {job.description}
-                                                </p>
-                                            )}
+                        {jobs.length === 0 ? (
+                            <EmptyState
+                                icon={Briefcase}
+                                title="No jobs posted yet"
+                                description="Start by posting your first job to attract talented candidates."
+                                action={
+                                    <Button onClick={() => navigate('/post-job')}>
+                                        <Plus className="h-4 w-4" aria-hidden="true" />
+                                        Post your first job
+                                    </Button>
+                                }
+                            />
+                        ) : (
+                            <ul className="space-y-4">
+                                {jobs.map((job) => (
+                                    <Card as="li" key={job.id} className="p-5 sm:p-6">
+                                        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                                            <div className="min-w-0 flex-1 space-y-3">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <h3 className="break-words text-lg font-semibold text-foreground">
+                                                        {job.title}
+                                                    </h3>
+                                                    <Badge variant={jobStatusBadgeVariant(job.status)}>
+                                                        {jobStatusLabel(job.status)}
+                                                    </Badge>
+                                                </div>
 
-                                            <div className="flex items-center space-x-2 text-xs text-gray-500">
+                                                <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm text-foreground-muted sm:grid-cols-2">
+                                                    <div className="flex items-center gap-2">
+                                                        <MapPin className="h-4 w-4 shrink-0 text-foreground-subtle" aria-hidden="true" />
+                                                        <span className="break-words">{job.location}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <Calendar className="h-4 w-4 shrink-0 text-foreground-subtle" aria-hidden="true" />
+                                                        {/* Jobs store ISO strings, so this is a
+                                                            direct parse rather than the
+                                                            Timestamp decode the task and
+                                                            application lists need. */}
+                                                        <span>
+                                                            {job.createdAt
+                                                                ? new Date(job.createdAt).toLocaleDateString()
+                                                                : 'Date not available'}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <DollarSign className="h-4 w-4 shrink-0 text-foreground-subtle" aria-hidden="true" />
+                                                        <span className="font-medium text-foreground">
+                                                            {priceLabel(job.price)}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <Users className="h-4 w-4 shrink-0 text-foreground-subtle" aria-hidden="true" />
+                                                        <span>
+                                                            {job.applicantCount} applicant
+                                                            {job.applicantCount !== 1 ? 's' : ''}
+                                                        </span>
+                                                    </div>
+                                                </div>
+
+                                                {job.description && (
+                                                    <p className="line-clamp-2 break-words text-sm text-foreground-muted">
+                                                        {job.description}
+                                                    </p>
+                                                )}
+
                                                 {job.jobType && (
-                                                    <span className="bg-gray-100 px-2 py-1 rounded-full">
-                                                        {job.jobType}
-                                                    </span>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <Badge variant="neutral">{job.jobType}</Badge>
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            <div className="flex flex-wrap gap-2 lg:w-56 lg:shrink-0 lg:flex-col">
+                                                {/* Existing flows only. `/jobs/:jobId` is the
+                                                    detail page, `/edit-job/:jobId` the edit form,
+                                                    and the applications route the one
+                                                    ViewJobApplications.jsx is registered on. */}
+                                                <ActionLink to={`/jobs/${job.id}`} variant="secondary">
+                                                    <Eye className="h-4 w-4" aria-hidden="true" />
+                                                    Details
+                                                </ActionLink>
+
+                                                <Button
+                                                    variant="secondary"
+                                                    size="sm"
+                                                    className="flex-1 lg:w-full"
+                                                    onClick={() => navigate(`/edit-job/${job.id}`)}
+                                                    disabled={job.applicantCount > 0}
+                                                >
+                                                    <Edit3 className="h-4 w-4" aria-hidden="true" />
+                                                    Edit
+                                                </Button>
+
+                                                <Button
+                                                    variant="destructive"
+                                                    size="sm"
+                                                    className="flex-1 lg:w-full"
+                                                    onClick={() => handleDeleteJob(job)}
+                                                    disabled={job.applicantCount > 0 || deletingId === job.id}
+                                                >
+                                                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                                                    {deletingId === job.id ? 'Deleting…' : 'Delete'}
+                                                </Button>
+
+                                                {/* STAGE 10C: applications are reviewable while the
+                                                    job is open AND after it has been filled,
+                                                    matching EmployerDashboard. Still gated for a
+                                                    CLOSED job, which is a deliberate employer
+                                                    decision to stop taking applications. The filled
+                                                    branch keeps the distinction: the label changes
+                                                    from "View Apps" to "View Applicants". The title
+                                                    is encoded because it is part of the path and job
+                                                    titles contain spaces. */}
+                                                {job.status === 'open' ? (
+                                                    <ActionLink
+                                                        to={`/employer/jobs/${job.id}/applications/${encodeURIComponent(job.title)}`}
+                                                        variant="primary"
+                                                    >
+                                                        <Eye className="h-4 w-4" aria-hidden="true" />
+                                                        View apps
+                                                    </ActionLink>
+                                                ) : isJobFilled(job.status) ? (
+                                                    <ActionLink
+                                                        to={`/employer/jobs/${job.id}/applications/${encodeURIComponent(job.title)}`}
+                                                        variant="accent"
+                                                    >
+                                                        <Eye className="h-4 w-4" aria-hidden="true" />
+                                                        View applicants
+                                                    </ActionLink>
+                                                ) : (
+                                                    <Button
+                                                        variant="secondary"
+                                                        size="sm"
+                                                        className="flex-1 lg:w-full"
+                                                        disabled
+                                                    >
+                                                        <Eye className="h-4 w-4" aria-hidden="true" />
+                                                        Closed
+                                                    </Button>
+                                                )}
+
+                                                {/* STAGE 10H.3. A SECOND, additive action, drawn
+                                                    only once a job has at least one hire. The count
+                                                    is the number of employment records for the job,
+                                                    so a job that hired twice reads "Manage
+                                                    employees (2)". The title is encoded for the
+                                                    same reason the applications links above encode
+                                                    it: it is a path segment and job titles contain
+                                                    spaces. */}
+                                                {job.employeeCount > 0 && (
+                                                    <ActionLink
+                                                        to={`/employer/jobs/${job.id}/employees/${encodeURIComponent(job.title)}`}
+                                                        variant="secondary"
+                                                    >
+                                                        <Users className="h-4 w-4" aria-hidden="true" />
+                                                        Manage employees ({job.employeeCount})
+                                                    </ActionLink>
                                                 )}
                                             </div>
                                         </div>
-
-                                        <div className="flex flex-row lg:flex-col gap-2 lg:min-w-[200px]">
-                                            {/* Existing flows only. `/jobs/:jobId` is the
-                                                detail page, `/edit-job/:jobId` the edit form,
-                                                and the applications route the one
-                                                ViewJobApplications.jsx is registered on. */}
-                                            <Link
-                                                to={`/jobs/${job.id}`}
-                                                className="flex-1 lg:flex-none w-full flex items-center justify-center space-x-2 px-4 py-2 rounded-lg font-medium bg-gray-50 text-gray-700 hover:bg-gray-100 hover:shadow-md transition-all duration-200"
-                                            >
-                                                <Eye className="w-4 h-4" />
-                                                <span>Details</span>
-                                            </Link>
-
-                                            <button
-                                                onClick={() => navigate(`/edit-job/${job.id}`)}
-                                                disabled={job.applicantCount > 0}
-                                                className={`flex-1 lg:flex-none w-full flex items-center justify-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all duration-200 ${job.applicantCount > 0
-                                                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                                                    : 'bg-blue-50 text-blue-600 hover:bg-blue-100 hover:shadow-md'
-                                                    }`}
-                                            >
-                                                <Edit3 className="w-4 h-4" />
-                                                <span>Edit</span>
-                                            </button>
-
-                                            <button
-                                                onClick={() => handleDeleteJob(job)}
-                                                disabled={job.applicantCount > 0 || deletingId === job.id}
-                                                className={`flex-1 lg:flex-none w-full flex items-center justify-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all duration-200 ${job.applicantCount > 0
-                                                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                                                    : 'bg-red-50 text-red-600 hover:bg-red-100 hover:shadow-md'
-                                                    }`}
-                                            >
-                                                <Trash2 className="w-4 h-4" />
-                                                <span>
-                                                    {deletingId === job.id ? 'Deleting...' : 'Delete'}
-                                                </span>
-                                            </button>
-
-                                            {/* Applications can only be reviewed while the job
-                                                is open, matching EmployerDashboard. A filled
-                                                job's applications are no longer reviewable there
-                                                either. The title is encoded because it is part
-                                                of the path and job titles contain spaces. */}
-                                            {job.status === 'open' ? (
-                                                <Link
-                                                    to={`/employer/jobs/${job.id}/applications/${encodeURIComponent(job.title)}`}
-                                                    className="flex-1 lg:flex-none w-full flex items-center justify-center space-x-2 px-4 py-2 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg font-medium hover:from-green-600 hover:to-green-700 transition-all duration-200 hover:shadow-md"
-                                                >
-                                                    <Eye className="w-4 h-4" />
-                                                    <span>View Apps</span>
-                                                </Link>
-                                            ) : (
-                                                <button
-                                                    disabled
-                                                    className={`flex-1 lg:flex-none w-full flex items-center justify-center space-x-2 px-4 py-2 rounded-lg font-medium cursor-not-allowed ${isJobFilled(job.status)
-                                                        ? 'bg-blue-50 text-blue-400'
-                                                        : 'bg-gray-100 text-gray-400'
-                                                        }`}
-                                                >
-                                                    <Eye className="w-4 h-4" />
-                                                    <span>
-                                                        {isJobFilled(job.status) ? 'Filled' : 'Closed'}
-                                                    </span>
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    )}
+                                    </Card>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
                 </div>
-            </div>
+            </PageContainer>
         </div>
     );
 };

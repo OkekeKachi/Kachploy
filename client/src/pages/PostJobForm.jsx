@@ -1,9 +1,28 @@
-import React, { useEffect, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { auth } from '../firebase';
 import api from '../api';
 import { useNavigate } from 'react-router-dom';
-import EmployerNavbar from '../components/EmployerNavbar';
-import { Briefcase, MapPin, Clock, DollarSign, Calendar, Users, X, Plus, CheckSquare, List } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import AppNavbar from '../components/AppNavbar';
+import {
+    Briefcase,
+    CheckSquare,
+    List,
+    Calendar,
+    DollarSign,
+    Tags,
+    Plus,
+    X,
+    AlertCircle,
+} from 'lucide-react';
+import Button from '../components/ui/Button';
+import Card from '../components/ui/Card';
+import Badge from '../components/ui/Badge';
+import { PageContainer, PageHeader } from '../components/ui/PageContainer';
+import { PageLoader } from '../components/ui/Spinner';
+import { Field, Input, Textarea, Select } from '../components/ui/Field';
+import queryKeys from '../queryKeys';
+import { useUserQuery } from '../useUserQuery';
 
 // Mock skill suggestions - replace with your actual import
 const skillSuggestions = [
@@ -12,26 +31,17 @@ const skillSuggestions = [
     'Vue.js', 'Angular', 'Express.js', 'Django', 'Flask', 'MySQL'
 ];
 
-// Move InputField component outside to prevent re-creation
-const InputField = ({ icon: Icon, label, name, type = 'text', placeholder, required = false, className = '', value, onChange, error }) => (
-    <div className="space-y-2">
-        <label className="flex items-center text-sm font-medium text-gray-700">
-            <Icon className="w-4 h-4 mr-2 text-gray-500" />
-            {label}
-            {required && <span className="text-red-500 ml-1">*</span>}
-        </label>
-        <input
-            type={type}
-            name={name}
-            value={value}
-            onChange={onChange}
-            placeholder={placeholder}
-            className={`w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors ${error ? 'border-red-500' : ''} ${className}`}
-        />
-        {error && <p className="text-sm text-red-600">{error}</p>}
-    </div>
-);
+/*
+  STAGE 11.5: presentation-only redesign.
 
+  Everything below (state, the fetchUser effect, handleChange, the add/remove
+  helpers, validateForm, handleSubmit and filteredSuggestions) keeps its
+  behaviour. This stage replaces the local
+  gradient/gray InputField component and the ad-hoc blue-600 class strings with
+  the shared Field/Input/Textarea/Select, Button, Card, Badge and PageContainer/
+  PageHeader primitives and the index.css design tokens. No field, default,
+  validation rule or endpoint was added, removed or renamed.
+*/
 const PostJobForm = () => {
     const [formData, setFormData] = useState({
         title: '',
@@ -43,49 +53,34 @@ const PostJobForm = () => {
         expectedEndDate: '',
         price: '',
         negotiable: 'no',
+        applicationRequirements: {
+            resume: 'not_needed',
+            coverLetter: 'optional',
+            portfolio: 'not_needed',
+        },
         skillsRequired: [],
         requirements: [],
         responsibilities: [],
     });
 
-    const [user, setUser] = useState({});
     const [skillInput, setSkillInput] = useState('');
     const [requirementInput, setRequirementInput] = useState('');
     const [responsibilityInput, setResponsibilityInput] = useState('');
     const [errors, setErrors] = useState({});
-    const [loading, setLoading] = useState(true);
+    const [submitError, setSubmitError] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const submitInFlightRef = useRef(false);
     const navigate = useNavigate();
+    const queryClient = useQueryClient();
 
-    // Properly fetch user data once when component mounts
-    useEffect(() => {
-        const fetchUser = async () => {
-            try {
-                const authUser = auth.currentUser;
-                if (authUser) {
-                    console.log('Fetching user data for:', authUser.uid);
-                    const res = await api.get(`/users/getUser/${authUser.uid}`);
-                    const userData = res.data.user;
-                    setUser(userData);
-                } else {
-                    console.log('No authenticated user found');
-                }
-            } catch (error) {
-                console.error('Error fetching user:', error);
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        const unsubscribe = auth.onAuthStateChanged((authUser) => {
-            if (authUser) {
-                fetchUser();
-            } else {
-                setLoading(false);
-            }
-        });
-
-        return () => unsubscribe();
-    }, []);
+    // Phase 5A of the data-fetching audit: the navbar's profile read is the
+    // shared identity query (useUserQuery.js) instead of a private fetchUser
+    // effect. The page still waits for the document before rendering (the
+    // `loading` gate below is now the query's first-load status), and a failed
+    // or absent document still leaves the navbar with an empty user object.
+    const uid = auth.currentUser ? auth.currentUser.uid : '';
+    const userQuery = useUserQuery(uid);
+    const user = userQuery.data || {};
 
     const handleChange = (e) => {
         const { name, value } = e.target;
@@ -96,6 +91,21 @@ const PostJobForm = () => {
         if (errors[name]) {
             setErrors(prev => ({ ...prev, [name]: '' }));
         }
+    };
+
+    // STAGE 12.13. The application requirements are a nested map, so they need
+    // their own handler; the flat handleChange above would replace the whole
+    // object with a string. Each select names its key (resume/coverLetter/
+    // portfolio) and carries one of the three levels jobService accepts.
+    const handleRequirementChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({
+            ...prev,
+            applicationRequirements: {
+                ...prev.applicationRequirements,
+                [name]: value,
+            },
+        }));
     };
 
     const addSkill = (skill) => {
@@ -165,14 +175,21 @@ const PostJobForm = () => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+
+        if (submitInFlightRef.current) return;
+
         const authUser = auth.currentUser;
 
         if (!authUser) {
-            alert('You must be logged in');
+            setSubmitError('Your session has expired. Please sign in again to post this job.');
             return;
         }
 
         if (!validateForm()) return;
+
+        submitInFlightRef.current = true;
+        setIsSubmitting(true);
+        setSubmitError('');
 
         try {
             await api.post('/jobs/create', {
@@ -180,11 +197,24 @@ const PostJobForm = () => {
                 postedBy: authUser.uid,
             });
 
-            alert('Job posted successfully!');
+            // Phase 4 of the data-fetching audit: a successful create writes one
+            // job document, which changes the employer's posted-jobs list -- the
+            // shared entry EmployerDashboard and MyJobs both observe. Nothing
+            // else the employer caches is affected: the new job has no
+            // applications (so the counts map simply has no key for it, reading
+            // as 0) and no employment. The invalidation is awaited before the
+            // navigation; no observer of this key is mounted on /post-job, so
+            // nothing refetches here -- the mark makes the destination pages
+            // revalidate on mount instead of painting the pre-post list.
+            await queryClient.invalidateQueries({ queryKey: queryKeys.employerJobs(authUser.uid) });
+
             navigate("/dashboard");
         } catch (err) {
             console.error('Error posting job:', err);
-            alert('Failed to post job');
+            setSubmitError('The job could not be posted. Please try again.');
+        } finally {
+            submitInFlightRef.current = false;
+            setIsSubmitting(false);
         }
     };
 
@@ -195,69 +225,68 @@ const PostJobForm = () => {
         ).slice(0, 6)
         : [];
 
-    if (loading) {
-        return (
-            <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-                <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                    <p className="text-gray-600">Loading...</p>
-                </div>
-            </div>
-        );
+    if (Boolean(uid) && userQuery.isPending) {
+        return <PageLoader label="Loading…" />;
     }
 
     return (
-        <div className="min-h-screen bg-gray-50  ">
-            <EmployerNavbar user={user} />
-            <br /><br />    
-            <div className="max-w-3xl mx-auto">
-                <div className="text-center mb-8">
-                    <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-100 rounded-full mb-4">
-                        <Briefcase className="w-8 h-8 text-blue-600" />
-                    </div>
-                    <h1 className="text-3xl font-bold text-gray-900 mb-2">Post a New Job</h1>
-                    <p className="text-gray-600">Fill in the details below to create your job posting</p>
-                </div>
+        <div className="min-h-screen bg-canvas">
+            <AppNavbar user={user} />
 
-                <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-lg overflow-hidden">
-                    <div className="p-8 space-y-6">
+            <PageContainer className="py-8">
+                <div className="mx-auto max-w-3xl space-y-6">
+                    <PageHeader
+                        title="Post a New Job"
+                        description="Fill in the details below to create your job posting."
+                    />
+
+                    {submitError && (
+                        <div
+                            role="alert"
+                            className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger-subtle p-4 text-sm text-danger-subtle-foreground"
+                        >
+                            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                            <p className="min-w-0">{submitError}</p>
+                        </div>
+                    )}
+
+                    <form onSubmit={handleSubmit} className="space-y-6">
                         {/* Job Details Section */}
-                        <div className="border-b border-gray-200 pb-6">
-                            <h2 className="text-xl font-semibold text-gray-900 mb-4">Job Details</h2>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="md:col-span-2">
-                                    <InputField
-                                        icon={Briefcase}
-                                        label="Job Title"
+                        <Card className="p-5 sm:p-6">
+                            <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+                                <Briefcase className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                Job details
+                            </h2>
+
+                            <div className="mt-4 grid gap-5 sm:grid-cols-2">
+                                <Field id="title" label="Job title" required error={errors.title} className="sm:col-span-2">
+                                    <Input
+                                        id="title"
+                                        type="text"
                                         name="title"
                                         placeholder="e.g. Senior React Developer"
-                                        required
                                         value={formData.title}
                                         onChange={handleChange}
-                                        error={errors.title}
                                     />
-                                </div>
-                                <InputField
-                                    icon={MapPin}
-                                    label="Location"
-                                    name="location"
-                                    placeholder="e.g. New York, NY or Remote"
-                                    required
-                                    value={formData.location}
-                                    onChange={handleChange}
-                                    error={errors.location}
-                                />
-                                <div className="space-y-2">
-                                    <label className="flex items-center text-sm font-medium text-gray-700">
-                                        <Users className="w-4 h-4 mr-2 text-gray-500" />
-                                        Job Type
-                                        <span className="text-red-500 ml-1">*</span>
-                                    </label>
-                                    <select
+                                </Field>
+
+                                <Field id="location" label="Location" required error={errors.location}>
+                                    <Input
+                                        id="location"
+                                        type="text"
+                                        name="location"
+                                        placeholder="e.g. New York, NY or Remote"
+                                        value={formData.location}
+                                        onChange={handleChange}
+                                    />
+                                </Field>
+
+                                <Field id="jobType" label="Job type" required error={errors.jobType}>
+                                    <Select
+                                        id="jobType"
                                         name="jobType"
                                         value={formData.jobType}
                                         onChange={handleChange}
-                                        className={`w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors ${errors.jobType ? 'border-red-500' : ''}`}
                                     >
                                         <option value="">Select job type</option>
                                         <option value="Full-time">Full-time</option>
@@ -265,249 +294,340 @@ const PostJobForm = () => {
                                         <option value="Contract">Contract</option>
                                         <option value="Freelance">Freelance</option>
                                         <option value="Internship">Internship</option>
-                                    </select>
-                                    {errors.jobType && <p className="text-sm text-red-600">{errors.jobType}</p>}
-                                </div>
+                                    </Select>
+                                </Field>
+
+                                <Field id="description" label="Job description" required error={errors.description} className="sm:col-span-2">
+                                    <Textarea
+                                        id="description"
+                                        name="description"
+                                        rows={6}
+                                        placeholder="Describe the role, responsibilities, and requirements..."
+                                        value={formData.description}
+                                        onChange={handleChange}
+                                    />
+                                </Field>
                             </div>
-                            <div className="mt-6">
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                    Job Description
-                                    <span className="text-red-500 ml-1">*</span>
-                                </label>
-                                <textarea
-                                    name="description"
-                                    value={formData.description}
-                                    onChange={handleChange}
-                                    placeholder="Describe the role, responsibilities, and requirements..."
-                                    rows={6}
-                                    className={`w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors resize-none ${errors.description ? 'border-red-500' : ''}`}
-                                />
-                                {errors.description && <p className="text-sm text-red-600">{errors.description}</p>}
-                            </div>
-                        </div>
+                        </Card>
 
                         {/* Job Requirements Section */}
-                        <div className="border-b border-gray-200 pb-6">
-                            <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
-                                <CheckSquare className="w-5 h-5 mr-2 text-gray-600" />
-                                Job Requirements
+                        <Card className="p-5 sm:p-6">
+                            <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+                                <CheckSquare className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                Job requirements
                             </h2>
-                            <div className="space-y-4">
-                                <div className="flex gap-2">
-                                    <input
-                                        type="text"
-                                        placeholder="e.g. Bachelor's degree in Computer Science"
-                                        value={requirementInput}
-                                        onChange={(e) => setRequirementInput(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter') {
-                                                e.preventDefault();
-                                                addRequirement();
-                                            }
-                                        }}
-                                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={addRequirement}
-                                        className="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                                    >
-                                        <Plus className="w-5 h-5" />
-                                    </button>
-                                </div>
+
+                            <div className="mt-4 space-y-4">
+                                <Field
+                                    id="requirement-input"
+                                    label="Add a requirement"
+                                    hint="Press Enter or the add button to add it to the list."
+                                >
+                                    <div className="flex gap-2">
+                                        <Input
+                                            id="requirement-input"
+                                            type="text"
+                                            placeholder="e.g. Bachelor's degree in Computer Science"
+                                            value={requirementInput}
+                                            onChange={(e) => setRequirementInput(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    e.preventDefault();
+                                                    addRequirement();
+                                                }
+                                            }}
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="primary"
+                                            size="icon"
+                                            aria-label="Add requirement"
+                                            onClick={addRequirement}
+                                        >
+                                            <Plus className="h-5 w-5" aria-hidden="true" />
+                                        </Button>
+                                    </div>
+                                </Field>
 
                                 {formData.requirements.length > 0 && (
                                     <div>
-                                        <p className="text-sm font-medium text-gray-700 mb-2">Added Requirements:</p>
-                                        <div className="space-y-2">
+                                        <p className="text-sm font-medium text-foreground">Added requirements</p>
+                                        <ul className="mt-2 space-y-2">
                                             {formData.requirements.map((requirement, index) => (
-                                                <div
+                                                <li
                                                     key={index}
-                                                    className="flex items-start justify-between p-3 bg-gray-50 rounded-lg border"
+                                                    className="flex items-start justify-between gap-3 rounded-md border border-border bg-surface-muted p-3"
                                                 >
-                                                    <span className="text-sm text-gray-800 flex-1">{requirement}</span>
-                                                    <button
+                                                    <span className="min-w-0 flex-1 break-words text-sm text-foreground">
+                                                        {requirement}
+                                                    </span>
+                                                    <Button
                                                         type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        aria-label={`Remove ${requirement}`}
                                                         onClick={() => removeRequirement(requirement)}
-                                                        className="ml-2 text-red-600 hover:text-red-800 flex-shrink-0"
                                                     >
-                                                        <X className="w-4 h-4" />
-                                                    </button>
-                                                </div>
+                                                        <X className="h-4 w-4" aria-hidden="true" />
+                                                    </Button>
+                                                </li>
                                             ))}
-                                        </div>
+                                        </ul>
                                     </div>
                                 )}
                             </div>
-                        </div>
+                        </Card>
 
                         {/* Job Responsibilities Section */}
-                        <div className="border-b border-gray-200 pb-6">
-                            <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
-                                <List className="w-5 h-5 mr-2 text-gray-600" />
-                                Job Responsibilities
+                        <Card className="p-5 sm:p-6">
+                            <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+                                <List className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                Job responsibilities
                             </h2>
-                            <div className="space-y-4">
-                                <div className="flex gap-2">
-                                    <input
-                                        type="text"
-                                        placeholder="e.g. Develop and maintain web applications"
-                                        value={responsibilityInput}
-                                        onChange={(e) => setResponsibilityInput(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter') {
-                                                e.preventDefault();
-                                                addResponsibility();
-                                            }
-                                        }}
-                                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={addResponsibility}
-                                        className="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                                    >
-                                        <Plus className="w-5 h-5" />
-                                    </button>
-                                </div>
+
+                            <div className="mt-4 space-y-4">
+                                <Field
+                                    id="responsibility-input"
+                                    label="Add a responsibility"
+                                    hint="Press Enter or the add button to add it to the list."
+                                >
+                                    <div className="flex gap-2">
+                                        <Input
+                                            id="responsibility-input"
+                                            type="text"
+                                            placeholder="e.g. Develop and maintain web applications"
+                                            value={responsibilityInput}
+                                            onChange={(e) => setResponsibilityInput(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    e.preventDefault();
+                                                    addResponsibility();
+                                                }
+                                            }}
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="primary"
+                                            size="icon"
+                                            aria-label="Add responsibility"
+                                            onClick={addResponsibility}
+                                        >
+                                            <Plus className="h-5 w-5" aria-hidden="true" />
+                                        </Button>
+                                    </div>
+                                </Field>
 
                                 {formData.responsibilities.length > 0 && (
                                     <div>
-                                        <p className="text-sm font-medium text-gray-700 mb-2">Added Responsibilities:</p>
-                                        <div className="space-y-2">
+                                        <p className="text-sm font-medium text-foreground">Added responsibilities</p>
+                                        <ul className="mt-2 space-y-2">
                                             {formData.responsibilities.map((responsibility, index) => (
-                                                <div
+                                                <li
                                                     key={index}
-                                                    className="flex items-start justify-between p-3 bg-gray-50 rounded-lg border"
+                                                    className="flex items-start justify-between gap-3 rounded-md border border-border bg-surface-muted p-3"
                                                 >
-                                                    <span className="text-sm text-gray-800 flex-1">{responsibility}</span>
-                                                    <button
+                                                    <span className="min-w-0 flex-1 break-words text-sm text-foreground">
+                                                        {responsibility}
+                                                    </span>
+                                                    <Button
                                                         type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        aria-label={`Remove ${responsibility}`}
                                                         onClick={() => removeResponsibility(responsibility)}
-                                                        className="ml-2 text-red-600 hover:text-red-800 flex-shrink-0"
                                                     >
-                                                        <X className="w-4 h-4" />
-                                                    </button>
-                                                </div>
+                                                        <X className="h-4 w-4" aria-hidden="true" />
+                                                    </Button>
+                                                </li>
                                             ))}
-                                        </div>
+                                        </ul>
                                     </div>
                                 )}
                             </div>
-                        </div>
+                        </Card>
 
                         {/* Timeline Section */}
-                        <div className="border-b border-gray-200 pb-6">
-                            <h2 className="text-xl font-semibold text-gray-900 mb-4">Timeline</h2>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                <InputField
-                                    icon={Calendar}
-                                    label="Application Deadline"
-                                    name="applicationDeadline"
-                                    type="date"
-                                    required
-                                    value={formData.applicationDeadline}
-                                    onChange={handleChange}
-                                    error={errors.applicationDeadline}
-                                />
-                                <InputField
-                                    icon={Clock}
-                                    label="Start Date"
-                                    name="jobStartDate"
-                                    type="date"
-                                    required
-                                    value={formData.jobStartDate}
-                                    onChange={handleChange}
-                                    error={errors.jobStartDate}
-                                />
-                                <InputField
-                                    icon={Calendar}
-                                    label="Expected End Date"
-                                    name="expectedEndDate"
-                                    type="date"
-                                    value={formData.expectedEndDate}
-                                    onChange={handleChange}
-                                    error={errors.expectedEndDate}
-                                />
+                        <Card className="p-5 sm:p-6">
+                            <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+                                <Calendar className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                Timeline
+                            </h2>
+
+                            <div className="mt-4 grid gap-5 sm:grid-cols-3">
+                                <Field id="applicationDeadline" label="Application deadline" required error={errors.applicationDeadline}>
+                                    <Input
+                                        id="applicationDeadline"
+                                        type="date"
+                                        name="applicationDeadline"
+                                        value={formData.applicationDeadline}
+                                        onChange={handleChange}
+                                    />
+                                </Field>
+
+                                <Field id="jobStartDate" label="Start date" required error={errors.jobStartDate}>
+                                    <Input
+                                        id="jobStartDate"
+                                        type="date"
+                                        name="jobStartDate"
+                                        value={formData.jobStartDate}
+                                        onChange={handleChange}
+                                    />
+                                </Field>
+
+                                <Field id="expectedEndDate" label="Expected end date" error={errors.expectedEndDate}>
+                                    <Input
+                                        id="expectedEndDate"
+                                        type="date"
+                                        name="expectedEndDate"
+                                        value={formData.expectedEndDate}
+                                        onChange={handleChange}
+                                    />
+                                </Field>
                             </div>
-                        </div>
+                        </Card>
 
                         {/* Compensation Section */}
-                        <div className="border-b border-gray-200 pb-6">
-                            <h2 className="text-xl font-semibold text-gray-900 mb-4">Compensation</h2>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <InputField
-                                    icon={DollarSign}
-                                    label="Fixed Price"
-                                    name="price"
-                                    type="number"
-                                    placeholder="5000"
-                                    required
-                                    value={formData.price}
-                                    onChange={handleChange}
-                                    error={errors.price}
-                                />
-                                <div className="space-y-2">
-                                    <label className="block text-sm font-medium text-gray-700">
-                                        Price Negotiability
-                                    </label>
-                                    <select
+                        <Card className="p-5 sm:p-6">
+                            <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+                                <DollarSign className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                Compensation
+                            </h2>
+
+                            <div className="mt-4 grid gap-5 sm:grid-cols-2">
+                                <Field id="price" label="Fixed price" required error={errors.price}>
+                                    <Input
+                                        id="price"
+                                        type="number"
+                                        name="price"
+                                        placeholder="5000"
+                                        value={formData.price}
+                                        onChange={handleChange}
+                                    />
+                                </Field>
+
+                                <Field id="negotiable" label="Price negotiability">
+                                    <Select
+                                        id="negotiable"
                                         name="negotiable"
                                         value={formData.negotiable}
                                         onChange={handleChange}
-                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                                     >
                                         <option value="no">Fixed Price</option>
                                         <option value="yes">Negotiable</option>
-                                    </select>
-                                </div>
+                                    </Select>
+                                </Field>
                             </div>
-                        </div>
+                        </Card>
+
+                        {/* Application requirements Section */}
+                        <Card className="p-5 sm:p-6">
+                            <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+                                <CheckSquare className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                Application requirements
+                            </h2>
+                            <p className="mt-1 text-sm text-foreground-muted">
+                                Choose what applicants must provide with their application.
+                                "Required" blocks an application that omits it.
+                            </p>
+
+                            <div className="mt-4 grid gap-5 sm:grid-cols-3">
+                                <Field id="req-resume" label="Resume">
+                                    <Select
+                                        id="req-resume"
+                                        name="resume"
+                                        value={formData.applicationRequirements.resume}
+                                        onChange={handleRequirementChange}
+                                    >
+                                        <option value="not_needed">Not needed</option>
+                                        <option value="optional">Optional</option>
+                                        <option value="required">Required</option>
+                                    </Select>
+                                </Field>
+
+                                <Field id="req-coverLetter" label="Cover letter">
+                                    <Select
+                                        id="req-coverLetter"
+                                        name="coverLetter"
+                                        value={formData.applicationRequirements.coverLetter}
+                                        onChange={handleRequirementChange}
+                                    >
+                                        <option value="not_needed">Not needed</option>
+                                        <option value="optional">Optional</option>
+                                        <option value="required">Required</option>
+                                    </Select>
+                                </Field>
+
+                                <Field id="req-portfolio" label="Portfolio">
+                                    <Select
+                                        id="req-portfolio"
+                                        name="portfolio"
+                                        value={formData.applicationRequirements.portfolio}
+                                        onChange={handleRequirementChange}
+                                    >
+                                        <option value="not_needed">Not needed</option>
+                                        <option value="optional">Optional</option>
+                                        <option value="required">Required</option>
+                                    </Select>
+                                </Field>
+                            </div>
+                        </Card>
 
                         {/* Skills Section */}
-                        <div className="pb-6">
-                            <h2 className="text-xl font-semibold text-gray-900 mb-4">Required Skills</h2>
-                            <div className="space-y-4">
-                                <div className="flex gap-2">
-                                    <input
-                                        type="text"
-                                        placeholder="Type to search skills..."
-                                        value={skillInput}
-                                        onChange={(e) => setSkillInput(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter') {
-                                                e.preventDefault();
+                        <Card className="p-5 sm:p-6">
+                            <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+                                <Tags className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                Required skills
+                            </h2>
+
+                            <div className="mt-4 space-y-4">
+                                <Field
+                                    id="skill-input"
+                                    label="Add a skill"
+                                    hint="Type to search, then press Enter or the add button."
+                                >
+                                    <div className="flex gap-2">
+                                        <Input
+                                            id="skill-input"
+                                            type="text"
+                                            placeholder="Type to search skills..."
+                                            value={skillInput}
+                                            onChange={(e) => setSkillInput(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    e.preventDefault();
+                                                    if (skillInput.trim()) {
+                                                        addSkill(skillInput.trim());
+                                                    }
+                                                }
+                                            }}
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="primary"
+                                            size="icon"
+                                            aria-label="Add skill"
+                                            onClick={() => {
                                                 if (skillInput.trim()) {
                                                     addSkill(skillInput.trim());
                                                 }
-                                            }
-                                        }}
-                                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            if (skillInput.trim()) {
-                                                addSkill(skillInput.trim());
-                                            }
-                                        }}
-                                        className="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                                    >
-                                        <Plus className="w-5 h-5" />
-                                    </button>
-                                </div>
+                                            }}
+                                        >
+                                            <Plus className="h-5 w-5" aria-hidden="true" />
+                                        </Button>
+                                    </div>
+                                </Field>
 
                                 {/* Skill Suggestions */}
                                 {filteredSuggestions.length > 0 && (
-                                    <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-                                        <p className="text-sm text-gray-600 mb-2">Suggestions:</p>
-                                        <div className="flex flex-wrap gap-2">
+                                    <div className="rounded-md border border-border bg-surface-muted p-3">
+                                        <p className="text-sm text-foreground-muted">Suggestions</p>
+                                        <div className="mt-2 flex flex-wrap gap-2">
                                             {filteredSuggestions.map(skill => (
                                                 <button
                                                     key={skill}
                                                     type="button"
                                                     onClick={() => addSkill(skill)}
-                                                    className="px-3 py-1 bg-white border border-gray-300 rounded-full text-sm hover:bg-blue-50 hover:border-blue-300 transition-colors"
+                                                    className="rounded-full border border-border bg-surface px-3 py-1 text-sm text-foreground transition-colors hover:bg-accent-subtle hover:text-accent-subtle-foreground"
                                                 >
                                                     {skill}
                                                 </button>
@@ -519,41 +639,42 @@ const PostJobForm = () => {
                                 {/* Selected Skills */}
                                 {formData.skillsRequired.length > 0 && (
                                     <div>
-                                        <p className="text-sm font-medium text-gray-700 mb-2">Selected Skills:</p>
-                                        <div className="flex flex-wrap gap-2">
+                                        <p className="text-sm font-medium text-foreground">Selected skills</p>
+                                        <div className="mt-2 flex flex-wrap gap-2">
                                             {formData.skillsRequired.map(skill => (
-                                                <span
-                                                    key={skill}
-                                                    className="inline-flex items-center px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm"
-                                                >
+                                                <Badge key={skill} variant="primary" className="gap-1">
                                                     {skill}
                                                     <button
                                                         type="button"
                                                         onClick={() => removeSkill(skill)}
-                                                        className="ml-2 text-blue-600 hover:text-blue-800"
+                                                        aria-label={`Remove ${skill}`}
+                                                        className="ml-0.5 rounded-full transition-colors hover:text-danger"
                                                     >
-                                                        <X className="w-4 h-4" />
+                                                        <X className="h-3.5 w-3.5" aria-hidden="true" />
                                                     </button>
-                                                </span>
+                                                </Badge>
                                             ))}
                                         </div>
                                     </div>
                                 )}
                             </div>
-                        </div>
+                        </Card>
 
                         {/* Submit Button */}
-                        <div className="pt-6">
-                            <button
+                        <div className="pt-2">
+                            <Button
                                 type="submit"
-                                className="w-full bg-blue-600 text-white py-4 px-6 rounded-lg font-semibold hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
+                                size="lg"
+                                className="w-full sm:w-auto"
+                                disabled={isSubmitting}
+                                aria-busy={isSubmitting}
                             >
-                                Post Job
-                            </button>
+                                {isSubmitting ? 'Posting…' : 'Post Job'}
+                            </Button>
                         </div>
-                    </div>
-                </form>
-            </div>
+                    </form>
+                </div>
+            </PageContainer>
         </div>
     );
 };

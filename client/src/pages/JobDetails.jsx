@@ -1,23 +1,132 @@
-import React, { useState, useEffect } from 'react';
+import React, { useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { auth } from '../firebase';
 import api from '../api';
-import { MapPin, Briefcase, DollarSign, Clock, CheckCircle, AlertCircle, Building, Users, Calendar, Star, Send } from 'lucide-react';
-import Navbar from '../components/Navbar';
-import EmployerNavbar from '../components/EmployerNavbar';
+import { uploadResume } from '../resumeUpload';
+import { MapPin, Briefcase, Clock, CheckCircle, AlertCircle, Users, Calendar, Star, Send, FileText } from 'lucide-react';
+import AppNavbar from '../components/AppNavbar';
+import Button from '../components/ui/Button';
+import Card from '../components/ui/Card';
+import Badge from '../components/ui/Badge';
+import EmptyState from '../components/ui/EmptyState';
+import { PageContainer, PageHeader } from '../components/ui/PageContainer';
+import { PageLoader } from '../components/ui/Spinner';
+import { Field, Input, Textarea } from '../components/ui/Field';
+import { useUserQuery } from '../useUserQuery';
+import { useApplicationCountsQuery } from '../useEmployerQueries';
+import { useJobQuery } from '../useAppQueries';
+import queryKeys from '../queryKeys';
+import { useQueryClient } from '@tanstack/react-query';
 
+/*
+  STAGE 11.6: presentation-only redesign.
+
+  Every request, field, state transition, validation rule and navigation below is
+  unchanged from the pre-11.6 version:
+    - the same GET /jobs/:jobId + GET /users/getUser/:uid load, the same GET
+      /applications/counts fallback-to-0, and the same loading/error branches;
+    - the same `negotiable === 'yes'` flag (STAGE 5D) and the same applied/apply
+      flow in handleApply (STAGE 5G), including the 2s delay, the exact validation
+      messages, the conditional `employeePrice`, and the same POST payload;
+    - the same explicit loading, error and not-found branches.
+
+  The Material Icons hero, the gradients and the hardcoded gray/blue class strings
+  are replaced with the shared PageContainer/PageHeader/Card/Badge/Button/EmptyState
+  primitives, the Field/Input/Textarea controls and the index.css tokens. No field
+  was added, removed or renamed, and no new data is rendered.
+*/
+
+// STAGE 12.9: the job document carries applicationDeadline, jobStartDate and
+// expectedEndDate (jobService writes all three; the first two are required on
+// create), but this page never showed any of them. The deadline is the single
+// thing a job seeker most needs before applying -- whether there is still time.
+// These helpers format those dates and turn the deadline into a plain urgency
+// label. Display-only: nothing here reads or changes application eligibility.
+const formatJobDate = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString();
+};
+
+// Whole days from now to the END of the deadline day (so the deadline day itself
+// reads as "Closes today", not "Closed"). Negative once it has passed; null when
+// the value is unusable.
+const daysUntilDeadline = (applicationDeadline) => {
+    if (!applicationDeadline) return null;
+    const date = new Date(applicationDeadline);
+    if (Number.isNaN(date.getTime())) return null;
+    date.setHours(23, 59, 59, 999);
+    return Math.ceil((date.getTime() - Date.now()) / 86400000);
+};
+
+// STAGE 12.13. The application-requirement levels and defaults, mirrored from
+// jobService (REQUIREMENT_LEVELS / DEFAULT_APPLICATION_REQUIREMENTS) so this form
+// and the server cannot disagree about what a job without the field requires.
+// `not_needed` hides the control and omits the value; `optional` collects it when
+// the applicant supplies it; `required` blocks submission until it is supplied.
+const REQUIREMENT_LEVELS = ['not_needed', 'optional', 'required'];
+const DEFAULT_APPLICATION_REQUIREMENTS = {
+    resume: 'not_needed',
+    coverLetter: 'optional',
+    portfolio: 'not_needed',
+};
+const normalizeApplicationRequirements = (value) => {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const normalized = {};
+    for (const key of Object.keys(DEFAULT_APPLICATION_REQUIREMENTS)) {
+        normalized[key] = REQUIREMENT_LEVELS.includes(source[key])
+            ? source[key]
+            : DEFAULT_APPLICATION_REQUIREMENTS[key];
+    }
+    return normalized;
+};
+
+/** True for an absolute http: or https: URL, matching the server's check. */
+const isValidHttpUrl = (value) => {
+    try {
+        const url = new URL(value);
+        return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+        return false;
+    }
+};
 
 const JobDetails = () => {
     const { jobId } = useParams();
-    const [job, setJob] = useState(null);
-    const [user, setUser] = useState(null);
-    const [message, setMessage] = useState('');
+    const [message] = useState('');
     const [applied, setApplied] = useState(false);
     const [employeePrice, setEmployeePrice] = useState('');
-    const [loading, setLoading] = useState(true);
     const [applying, setApplying] = useState(false);
     const [error, setError] = useState('');
-    const [applicantCount, setApplicantCount] = useState(0);
+    const applyInFlightRef = useRef(false);
+    const queryClient = useQueryClient();
+
+    // Phase 5A of the data-fetching audit: this page's own identity read
+    // (GET /users/getUser/:uid) and count-only read (GET /applications/counts)
+    // are now the shared queries instead of two requests issued from the effect
+    // below. `user` is the identity document the old `setUser` state held -- the
+    // same value, so the saved-resume lookup, the apply payload, the navbar and
+    // the logged-in guard are all unchanged. `applicantCount` is derived per job
+    // from the shared counts entry with the same fallback-to-0, so a missing,
+    // pending or failed count still renders 0.
+    const uid = auth.currentUser ? auth.currentUser.uid : '';
+    const jobQuery = useJobQuery(jobId);
+    const job = jobQuery.data ?? null;
+    const userQuery = useUserQuery(uid);
+    const user = userQuery.data ?? null;
+    const countsQuery = useApplicationCountsQuery(uid);
+    const applicantCount = (countsQuery.data || {})[jobId] || 0;
+
+    // STAGE 12.13. The three required/optional application inputs. `resumeMode`
+    // is which source the applicant chose ('saved' reuses the profile resume,
+    // 'upload' takes a file); `resumeFile` is that file; `coverLetter` and
+    // `portfolioUrl` are the other two collected values. `resumeError` is local
+    // to the resume control so a bad file does not blank the whole form.
+    const [resumeMode, setResumeMode] = useState('saved');
+    const [resumeFile, setResumeFile] = useState(null);
+    const [coverLetter, setCoverLetter] = useState('');
+    const [portfolioUrl, setPortfolioUrl] = useState('');
+    const [resumeError, setResumeError] = useState('');
 
     // STAGE 5D: `negotiable` is the canonical field on the job document and is
     // the string "yes"/"no", not a boolean. It must be compared against "yes"
@@ -27,50 +136,58 @@ const JobDetails = () => {
     // were always falsy and the proposed-price UI never appeared.
     const isNegotiable = job?.negotiable === 'yes';
 
-    useEffect(() => {
-        const fetchJobAndUser = async () => {
-            const res = await api.get(`/jobs/${jobId}`);
-            const dbUser = await api.get(`/users/getUser/${auth.currentUser.uid}`);
-            setJob(res.data.job);
-            setUser(dbUser.data.user);
-        };
-        fetchJobAndUser();
+    // STAGE 12.13. The job's application requirements (normalised so a job that
+    // predates the field behaves exactly as a new job with the defaults), the
+    // applicant's own saved resume if any, and the source the resume control
+    // should actually use -- 'saved' only when there is a saved resume.
+    const requirements = normalizeApplicationRequirements(job?.applicationRequirements);
+    const savedResume = user?.resume && user.resume.publicId ? user.resume : null;
+    const effectiveResumeMode = savedResume ? resumeMode : 'upload';
 
-        // STAGE 5E: this page used to render `{job.proposal} applicants`, reading
-        // a counter that POST /jobs/create wrote as a hardcoded 0 and that no
-        // code ever incremented, so it always read "0 applicants". The counter is
-        // gone. The applicant count is derived per job from the applications
-        // collection, and this is the same single read the dashboards already
-        // make -- one request here, not one per job. Nothing is persisted.
-        const fetchApplicantCount = async () => {
-            try {
-                const countsRes = await api.get('/applications/counts');
-                setApplicantCount((countsRes.data.counts || {})[jobId] || 0);
-            } catch (err) {
-                // A count failure must not break the page: it falls back to 0,
-                // which is what the dashboards do too.
-                console.error('Error fetching application counts', err);
-                setApplicantCount(0);
-            }
-        };
-        fetchApplicantCount();
-
-        console.log(auth.currentUser.uid);
-        console.log(user);
-
-        setLoading(false)
-    }, [jobId]);
+    // STAGE 12.9: timeline values shown in the meta card below.
+    const daysLeft = daysUntilDeadline(job?.applicationDeadline);
+    const deadlineDate = formatJobDate(job?.applicationDeadline);
+    const startDate = formatJobDate(job?.jobStartDate);
+    const endDate = formatJobDate(job?.expectedEndDate);
+    const deadlineBadge =
+        daysLeft === null
+            ? null
+            : daysLeft < 0
+                ? 'Closed'
+                : daysLeft === 0
+                    ? 'Closes today'
+                    : daysLeft === 1
+                        ? 'Closes tomorrow'
+                        : daysLeft <= 7
+                            ? `Closes in ${daysLeft} days`
+                            : null;
+    const deadlineVariant = daysLeft !== null && daysLeft < 0 ? 'danger' : 'warning';
 
     const handleApply = async () => {
+        if (applyInFlightRef.current) return;
+
         if (!user) {
             setError('You must be logged in to apply for this job.');
             return;
         }
 
-        if (!message.trim()) {
-            setError('Please write a message to accompany your application.');
+        // ── Front‑end eligibility guard ───────────────────────────────────────
+        if (!isJobOpen) {
+            if (isJobFilled) {
+                setError('This job is filled and no longer accepts applications.');
+            } else if (isJobClosed) {
+                setError('Applications for this job are closed.');
+            } else {
+                setError('This job is no longer accepting applications.');
+            }
             return;
         }
+        if (isDeadlinePassed) {
+            setError('The application deadline for this job has passed.');
+            return;
+        }
+
+        // Cover message removed; cover letter is only required if employer enables it.
 
         if (isNegotiable && !employeePrice) {
             setError('Please enter your proposed price for this negotiable job.');
@@ -82,336 +199,523 @@ const JobDetails = () => {
             return;
         }
 
+        // STAGE 12.13. Enforce the job's requirements in the form before any
+        // upload or request. These mirror the server's own checks, so the
+        // applicant is told here rather than by a 400 after the file has already
+        // travelled to Cloudinary.
+        //
+        // `includeResume` gates every resume decision on the job actually
+        // collecting one -- a `not_needed` job must never receive it. `useSaved`
+        // and `useUpload` are the two ways one can be supplied, and either being
+        // true is what satisfies a `required` resume.
+        const includeResume = requirements.resume !== 'not_needed';
+        const useSaved = includeResume && effectiveResumeMode === 'saved' && savedResume;
+        const useUpload = includeResume && effectiveResumeMode === 'upload';
+        const resumeProvided = useSaved || (useUpload && resumeFile);
+
+        if (requirements.resume === 'required' && !resumeProvided) {
+            setResumeError('Please attach a resume (use your saved one or upload a PDF).');
+            setError('This job requires a resume.');
+            return;
+        }
+
+        if (requirements.coverLetter === 'required' && !coverLetter.trim()) {
+            setError('This job requires a cover letter.');
+            return;
+        }
+
+        if (requirements.portfolio === 'required' && !isValidHttpUrl(portfolioUrl.trim())) {
+            setError('This job requires a portfolio URL (starting with http:// or https://).');
+            return;
+        }
+
+        applyInFlightRef.current = true;
         setApplying(true);
         setError('');
+        setResumeError('');
 
         try {
+            // A newly chosen resume is uploaded first so only a real, stored
+            // asset is referenced. Skipped entirely when the applicant reuses
+            // their saved resume or the job does not collect one.
+            let resumeRef = useSaved ? savedResume : null;
+
+            if (useUpload && resumeFile) {
+                try {
+                    resumeRef = await uploadResume(resumeFile);
+                } catch (uploadErr) {
+                    setResumeError(
+                        uploadErr && uploadErr.message
+                            ? uploadErr.message
+                            : 'Your resume could not be uploaded. Please try again.'
+                    );
+                    setError('Your resume could not be uploaded.');
+                    return;
+                }
+            }
+
             // Simulate API call
             await new Promise(resolve => setTimeout(resolve, 2000));
 
-            await api.post('/applications/apply', {
+            const payload = {
                 jobId,
                 employeeId: auth.currentUser.uid,
                 fullName: user.fullName || 'Anonymous',
-                message,
+                message: message || '',
                 employeePrice: isNegotiable ? employeePrice : null,  // Only send employeePrice if negotiable
                 // Stage 5G: `status` is no longer sent. The server owns it and
                 // always stores `pending`; the value used to be discarded here
                 // anyway, so sending it only implied a write that never happened.
-            });
+            };
+
+            // Each optional field is sent ONLY when the job collects it. A
+            // `not_needed` field must be absent or the server rejects it as
+            // "not required for this job".
+            if (requirements.resume !== 'not_needed' && resumeRef) {
+                payload.resume = resumeRef;
+            }
+            if (requirements.coverLetter !== 'not_needed' && coverLetter.trim()) {
+                payload.coverLetter = coverLetter.trim();
+            }
+            if (requirements.portfolio !== 'not_needed' && portfolioUrl.trim()) {
+                payload.portfolioUrl = portfolioUrl.trim();
+            }
+
+            await api.post('/applications/apply', payload);
+
+            // Phase 5A: the application just created changes the underlying count
+            // data, so the shared counts entry for this job is now stale. Invalidate
+            // it and await the refetch -- this page observes the same key, so the
+            // rendered applicantCount (and any other observer) updates to the
+            // incremented value. Same await-before-success pattern as PostJobForm
+            // and EditJobForm.
+            await queryClient.invalidateQueries({ queryKey: queryKeys.applicationCounts(uid) });
+            await queryClient.invalidateQueries({ queryKey: queryKeys.employeeApplications(uid) });
 
             setApplied(true);
         } catch (err) {
             setError('Failed to submit application. Please try again.');
             console.error('Application failed:', err);
         } finally {
+            applyInFlightRef.current = false;
             setApplying(false);
         }
     };
 
-    if (loading) {
-        return (
-            <div className="min-h-screen bg-gradient-to-br from-blue-50 to-white flex items-center justify-center">
-                <div className="text-center">
-                    <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4"></div>
-                    <p className="text-blue-600 font-medium">Loading job details...</p>
-                </div>
-            </div>
-        );
+    if (jobQuery.isPending) {
+        return <PageLoader label="Loading job details…" />;
     }
 
-    if (error && !job) {
+    if (jobQuery.isError) {
         return (
-            <div className="min-h-screen bg-gradient-to-br from-blue-50 to-white flex items-center justify-center">
-                <div className="bg-white rounded-xl shadow-lg p-8 max-w-md w-full mx-4">
-                    <div className="text-center">
-                        <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
-                        <h2 className="text-xl font-semibold text-gray-900 mb-2">Unable to Load Job</h2>
-                        <p className="text-gray-600">{error}</p>
-                        <button
-                            onClick={() => window.location.reload()}
-                            className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                        >
-                            Try Again
-                        </button>
+            <div className="min-h-screen bg-canvas">
+                <PageContainer className="py-16">
+                    <div className="mx-auto max-w-md">
+                        <EmptyState
+                            icon={AlertCircle}
+                            title="Unable to load job"
+                            description="This job could not be loaded. It may have been removed, or the connection may have failed."
+                            action={
+                                <Button
+                                    onClick={() => jobQuery.refetch()}
+                                    disabled={jobQuery.isFetching}
+                                    aria-busy={jobQuery.isFetching}
+                                >
+                                    {jobQuery.isFetching ? 'Trying again…' : 'Try again'}
+                                </Button>
+                            }
+                        />
                     </div>
-                </div>
+                </PageContainer>
             </div>
         );
     }
 
-    if (!job) return null;
+    if (!job) {
+        return (
+            <div className="min-h-screen bg-canvas">
+                <PageContainer className="py-16">
+                    <div className="mx-auto max-w-md">
+                        <EmptyState
+                            icon={AlertCircle}
+                            title="Job not found"
+                            description="This job is no longer available."
+                        />
+                    </div>
+                </PageContainer>
+            </div>
+        );
+    }
+
+    // Only derive job-dependent flags after the loading, error and missing-job
+    // branches have returned, so an absent `job` can never be dereferenced.
+    const isJobOpen   = job?.status === 'open';
+    const isJobFilled = job?.status === 'filled' || job?.status === 'Filled';
+    const isJobClosed = job?.status === 'closed' || job?.status === 'Closed';
+    const isDeadlinePassed = daysLeft !== null && daysLeft < 0;
 
     return (
-        <div>
-            {/* Use the extracted Navbar component */}
-            {/* <Navbar user={user} /> */}
-            <EmployerNavbar user={user}/>
-            
-            
-            <div className="min-h-screen bg-gradient-to-br from-white-900 via-white-800 to-white-900">
-                {/* Hero Section */}
-                <div className="relative overflow-hidden">
-                    <div className="absolute inset-0 bg-gradient-to-r from-blue-900 via-blue-800 to-indigo-900"></div>
-                    <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 lg:py-24">
-                        <div className="text-center lg:text-left">
-                            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-8">
-                                <div className="flex-1">
-                                    <div className="flex items-center gap-3 mb-4">
-                                        <div className="bg-white/10 backdrop-blur-sm rounded-xl p-3">
-                                            <Building className="w-8 h-8 text-white" />
-                                        </div>
-                                        <span className="text-blue-200 font-medium">{job.company}</span>
-                                    </div>
-                                    <h1 className="text-3xl lg:text:4xl font-bold text-white mb-6 leading-tight">
-                                        {job.title}
-                                    </h1>
-                                    <div className="flex flex-wrap gap-6 text-blue-100 text-lg">
-                                        <div className="flex items-center gap-2">
-                                            <MapPin className="w-6 h-6" />
-                                            <span>{job.location}</span>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <Briefcase className="w-6 h-6" />
-                                            <span className="capitalize">{job.jobType}</span>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <Users className="w-6 h-6" />
-                                            <span>{applicantCount} applicant{applicantCount !== 1 ? 's' : ''}</span>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <Star className="w-6 h-6 fill-yellow-400 text-yellow-400" />
-                                            <span>{job.rating} rating</span>
-                                        </div>
-                                    </div>
-                                </div>
+        <div className="min-h-screen bg-canvas">
+            <AppNavbar user={user} />
 
-                                {/* Price Card */}
-                                <div className="lg:flex-shrink-0">
-                                    <div className="bg-white/10 backdrop-blur-md rounded-2xl p-8 border border-white/20">
+            <PageContainer className="py-8">
+                <div className="space-y-6">
+                    <PageHeader
+                        title={job.title}
+                        description={job.company}
+                        actions={
+                            <div className="text-left sm:text-right">
+                                <p className="text-xl font-semibold text-foreground">
+                                    <span className="text-success">₦</span> {job.price?.toLocaleString()}
+                                </p>
+                                <Badge
+                                    variant={isNegotiable ? 'success' : 'neutral'}
+                                    className="mt-1"
+                                >
+                                    {isNegotiable ? (
+                                        <CheckCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                                    ) : (
+                                        <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                                    )}
+                                    {isNegotiable ? 'Negotiable' : 'Fixed price'}
+                                </Badge>
+                            </div>
+                        }
+                    />
+
+                    {/* Job meta */}
+                    <Card className="p-5 sm:p-6">
+                        <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-sm text-foreground-muted">
+                            <span className="inline-flex items-center gap-2">
+                                <MapPin className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                {job.location}
+                            </span>
+                            <span className="inline-flex items-center gap-2">
+                                <Briefcase className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                <span className="capitalize">{job.jobType}</span>
+                            </span>
+                            <span className="inline-flex items-center gap-2">
+                                <Users className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                {applicantCount} applicant{applicantCount !== 1 ? 's' : ''}
+                            </span>
+                            <span className="inline-flex items-center gap-2">
+                                <Star className="h-4 w-4 text-warning" aria-hidden="true" />
+                                {job.rating} rating
+                            </span>
+                        </div>
+
+                        {(deadlineDate || startDate || endDate) && (
+                            <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-border pt-4 text-sm text-foreground-muted">
+                                {deadlineDate && (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Calendar className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                        <span>
+                                            Apply by <span className="font-medium text-foreground">{deadlineDate}</span>
+                                        </span>
+                                        {deadlineBadge && (
+                                            <Badge variant={deadlineVariant}>{deadlineBadge}</Badge>
+                                        )}
+                                    </span>
+                                )}
+                                {startDate && (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Clock className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                        Starts {startDate}
+                                    </span>
+                                )}
+                                {endDate && (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Calendar className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                        Ends {endDate}
+                                    </span>
+                                )}
+                            </div>
+                        )}
+                    </Card>
+
+                    <div className="grid gap-6 lg:grid-cols-3">
+                        {/* Left content */}
+                        <div className="space-y-6 lg:col-span-2">
+                            {/* Job Description */}
+                            <Card as="section" className="p-5 sm:p-6">
+                                <h2 className="text-base font-semibold text-foreground">
+                                    Job description
+                                </h2>
+                                <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-foreground-muted">
+                                    {job.description}
+                                </p>
+                            </Card>
+
+                            {/* Skills Required */}
+                            <Card as="section" className="p-5 sm:p-6">
+                                <h2 className="text-base font-semibold text-foreground">
+                                    Skills required
+                                </h2>
+                                <div className="mt-3 flex flex-wrap gap-1.5">
+                                    {job.skillsRequired.map((req, index) => (
+                                        <Badge key={index} variant="neutral">{req}</Badge>
+                                    ))}
+                                </div>
+                            </Card>
+
+                            {/* Basic Requirements */}
+                            <Card as="section" className="p-5 sm:p-6">
+                                <h2 className="text-base font-semibold text-foreground">
+                                    Basic requirements
+                                </h2>
+                                <ul className="mt-3 space-y-2">
+                                    {job.requirements.map((benefit, index) => (
+                                        <li key={index} className="flex items-start gap-3">
+                                            <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden="true" />
+                                            <span className="text-sm text-foreground-muted">{benefit}</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </Card>
+
+                            {/* Responsibilities */}
+                            <Card as="section" className="p-5 sm:p-6">
+                                <h2 className="text-base font-semibold text-foreground">
+                                    Responsibilities
+                                </h2>
+                                <ul className="mt-3 space-y-2">
+                                    {job.responsibilities.map((benefit, index) => (
+                                        <li key={index} className="flex items-start gap-3">
+                                            <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
+                                            <span className="text-sm text-foreground-muted">{benefit}</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </Card>
+                        </div>
+
+                        {/* Application Sidebar */}
+                        <aside className="lg:col-span-1">
+                            <div className="lg:sticky lg:top-8">
+                                <Card className="p-5 sm:p-6">
+                                    {applied ? (
                                         <div className="text-center">
-                                            <div className="flex items-center justify-center gap-2 mb-2">
-                                                {/* <DollarSign className="w-8 h-8 text-green-400" /> */}
-                                                <span className="text-4xl font-bold text-white"> <span className='text-green-400'>₦</span> {job.price?.toLocaleString()}</span>
+                                            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-success-subtle text-success-subtle-foreground">
+                                                <CheckCircle className="h-7 w-7" aria-hidden="true" />
                                             </div>
-                                            {isNegotiable ? (
-                                                <div className="flex items-center justify-center gap-2 text-green-300">
-                                                    <CheckCircle className="w-5 h-5" />
-                                                    <span className="font-medium">Negotiable</span>
-                                                </div>
-                                            ) : (
-                                                <div className="flex items-center justify-center gap-2 text-blue-200">
-                                                    <Clock className="w-5 h-5" />
-                                                    <span className="font-medium">Fixed Price</span>
+                                            <h2 className="text-base font-semibold text-foreground">
+                                                Application submitted
+                                            </h2>
+                                            <p className="mt-2 text-sm leading-relaxed text-foreground-muted">
+                                                Your application has been sent successfully. The employer will review it and get back to you soon.
+                                            </p>
+                                            <p className="mt-4 inline-flex items-center gap-2 rounded-md bg-accent-subtle px-3 py-2 text-xs text-accent-subtle-foreground">
+                                                <Calendar className="h-4 w-4" aria-hidden="true" />
+                                                Applied on {new Date().toLocaleDateString()}
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+                                                <Send className="h-4 w-4 text-foreground-subtle" aria-hidden="true" />
+                                                Apply now
+                                            </h2>
+
+                                            { ( !isJobOpen || isDeadlinePassed ) && !applied && (
+                                                <p className="text-sm text-foreground-muted mt-2">
+                                                    {!isJobOpen
+                                                        ? ( isJobFilled
+                                                              ? 'This job is filled and no longer accepts applications.'
+                                                              : isJobClosed
+                                                                    ? 'Applications for this job are closed.'
+                                                                    : '')
+                                                        : isDeadlinePassed
+                                                            ? 'The application deadline for this job has passed.'
+                                                            : ''}
+                                                </p>
+                                            )}
+
+                                            {error && (
+                                                <div
+                                                    role="alert"
+                                                    className="mt-4 flex items-start gap-2 rounded-md bg-danger-subtle px-4 py-3 text-sm text-danger-subtle-foreground"
+                                                >
+                                                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                                                    <span>{error}</span>
                                                 </div>
                                             )}
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
 
-                {/* Main Content */}
-                <div className="relative -mt-8">
-                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                        <div className="grid lg:grid-cols-3 gap-8">
-                            {/* Left Content */}
-                            <div className="lg:col-span-2 space-y-8">
-                                {/* Job Description */}
-                                <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8 border border-white/20">
-                                    <h2 className="text-2xl font-bold text-gray-900 mb-6 flex items-center gap-3">
-                                        <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                                            <Briefcase className="w-6 h-6 text-blue-600" />
-                                        </div>
-                                        Job Description
-                                    </h2>
-                                    <div className="prose prose-lg max-w-none">
-                                        <p className="text-gray-700 leading-relaxed whitespace-pre-wrap text-lg">
-                                            {job.description}
-                                        </p>
-                                    </div>
-                                </div>
-
-                                {/* Requirements & Benefits */}
-                                <div className="grid md:grid-cols-2 gap-8">
-                                    <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8 border border-white/20">
-                                        <h3 className="text-xl font-bold text-gray-900 mb-6 flex items-center gap-3">
-                                            <div className="w-8 h-8 bg-red-100 rounded-lg flex items-center justify-center">
-                                                <CheckCircle className="w-5 h-5 text-red-600" />
-                                            </div>
-                                            Skills Required
-                                        </h3>
-                                        <ul className="space-y-3">
-                                            {job.skillsRequired.map((req, index) => (
-                                                <li key={index} className="flex items-start gap-3">
-                                                    <div className="w-2 h-2 bg-blue-600 rounded-full mt-3 flex-shrink-0"></div>
-                                                    <span className="text-gray-700 text-lg">{req}</span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    </div>
-
-                                    <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8 border border-white/20">
-                                        <h3 className="text-xl font-bold text-gray-900 mb-6 flex items-center gap-3">
-                                            <div className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center">
-                                                <Star className="w-5 h-5 text-green-600" />
-                                            </div>
-                                            Basic Requirements
-                                        </h3>
-                                        <ul className="space-y-3">
-                                        {job.requirements.map((benefit, index) => (
-                                            <li key={index} className="flex items-start gap-3">
-                                                <div className="w-2 h-2 bg-green-600 rounded-full mt-3 flex-shrink-0"></div>
-                                                <span className="text-gray-700 text-lg">{benefit}</span>
-                                            </li>
-                                        ))}
-                                        </ul>
-                                    </div>
-                                    <div className="bg-white/95 col-span-2 backdrop-blur-sm rounded-2xl shadow-2xl p-8 border border-white/20">
-                                        <h3 className="text-xl font-bold text-gray-900 mb-6 flex items-center gap-3">
-                                            <div className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center">
-                                                <Star className="w-5 h-5 text-green-600" />
-                                            </div>
-                                            Responsibilities
-                                        </h3>
-                                        <ul className="space-y-3">
-                                            {job.responsibilities.map((benefit, index) => (
-                                                <li key={index} className="flex items-start gap-3">
-                                                    <div className="w-2 h-2 bg-green-600 rounded-full mt-3 flex-shrink-0"></div>
-                                                    <span className="text-gray-700 text-lg">{benefit}</span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    </div><br />
-                                </div>
-                            </div>
-
-                            {/* Application Sidebar */}
-                            <div className="lg:col-span-1">
-                                <div className="sticky top-8">
-                                    <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8 border border-white/20">
-                                        {applied ? (
-                                            <div className="text-center">
-                                                <div className="w-15 h-15 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                                                    <CheckCircle className="w-12 h-12 text-green-600" />
-                                                </div>
-                                                <h3 className="text-xl font-bold text-gray-900 mb-4">Application Submitted!</h3>
-                                                <p className="text-gray-600 text-lg leading-relaxed">
-                                                    Your application has been sent successfully. The employer will review it and get back to you soon.
-                                                </p>
-                                                <div className="mt-6 p-4 bg-blue-50 rounded-xl">
-                                                    <p className="text-sm text-blue-700">
-                                                        <Calendar className="w-4 h-4 inline mr-2" />
-                                                        Applied on {new Date().toLocaleDateString()}
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <>
-                                                <h3 className="text-2xl font-bold text-gray-900 mb-8 flex items-center gap-3">
-                                                    <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
-                                                        <Send className="w-5 h-5 text-blue-600" />
-                                                    </div>
-                                                    Apply Now
-                                                </h3>
-
-                                                {error && (
-                                                    <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
-                                                        <div className="flex items-center gap-3">
-                                                            <AlertCircle className="w-6 h-6 text-red-500 flex-shrink-0" />
-                                                            <p className="text-red-700 font-medium">{error}</p>
+                                            <div className="mt-4 space-y-5">
+                                                {isNegotiable && (
+                                                    <Field
+                                                        id="employeePrice"
+                                                        label="Your proposed price"
+                                                        hint="This job allows price negotiation. Enter your competitive rate."
+                                                        required
+                                                    >
+                                                        <div className="relative">
+                                                            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-medium text-foreground-subtle">
+                                                                ₦
+                                                            </span>
+                                                            <Input
+                                                                id="employeePrice"
+                                                                type="number"
+                                                                value={employeePrice}
+                                                                onChange={(e) => setEmployeePrice(e.target.value)}
+                                                                placeholder="Enter your price"
+                                                                min="0"
+                                                                className="pl-8"
+                                                                required
+                                                            />
                                                         </div>
-                                                    </div>
+                                                    </Field>
                                                 )}
 
-                                                <div className="space-y-6">
-                                                    {isNegotiable && (
-                                                        <div>
-                                                            <label className="block text-lg font-bold text-gray-900 mb-3">
-                                                                Your Proposed Price *
-                                                            </label>
-                                                            <div className="relative">
-                                                                <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-500 font-bold text-lg">₦</span>
+                                                {/* Cover message removed; cover letter is controlled by employer via applicationRequirements.coverLetter. */}
+
+                                                {/* STAGE 12.13. Job-specific requirements. Each control
+                                                    appears only when the job collects it; `required` marks
+                                                    the ones the server refuses to do without, and handleApply
+                                                    enforces them before the upload or the request. */}
+                                                {requirements.resume !== 'not_needed' && (
+                                                    <fieldset className="min-w-0 space-y-1.5">
+                                                        <legend className="block text-sm font-medium text-foreground">
+                                                            Resume
+                                                            {requirements.resume === 'required' && (
+                                                                <span className="ml-0.5 text-danger" aria-hidden="true">*</span>
+                                                            )}
+                                                        </legend>
+
+                                                        <div className="space-y-3">
+                                                            {savedResume && (
+                                                                <label className="flex items-start gap-2 text-sm text-foreground">
+                                                                    <input
+                                                                        type="radio"
+                                                                        name="resumeMode"
+                                                                        className="mt-0.5"
+                                                                        checked={effectiveResumeMode === 'saved'}
+                                                                        onChange={() => {
+                                                                            setResumeMode('saved');
+                                                                            setResumeError('');
+                                                                        }}
+                                                                    />
+                                                                    <span>
+                                                                        Use my saved resume
+                                                                        <span className="ml-1 text-foreground-muted">
+                                                                            ({savedResume.name || 'resume.pdf'})
+                                                                        </span>
+                                                                    </span>
+                                                                </label>
+                                                            )}
+
+                                                            <label className="flex items-start gap-2 text-sm text-foreground">
                                                                 <input
-                                                                    type="number"
-                                                                    value={employeePrice}
-                                                                    onChange={(e) => setEmployeePrice(e.target.value)}
-                                                                    placeholder="Enter your price"
-                                                                    min="0"
-                                                                    className="w-full pl-10 pr-4 py-4 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-500 transition-all duration-200 text-lg font-medium"
-                                                                    required
+                                                                    type="radio"
+                                                                    name="resumeMode"
+                                                                    className="mt-0.5"
+                                                                    checked={effectiveResumeMode === 'upload'}
+                                                                    onChange={() => {
+                                                                        setResumeMode('upload');
+                                                                        setResumeError('');
+                                                                    }}
                                                                 />
-                                                            </div>
-                                                            <p className="text-sm text-gray-500 mt-2 bg-blue-50 p-3 rounded-lg">
-                                                                💡 This job allows price negotiation. Enter your competitive rate.
-                                                            </p>
-                                                        </div>
-                                                    )}
+                                                                <span>Upload a new resume</span>
+                                                            </label>
 
-                                                    <div>
-                                                        <label className="block text-lg font-bold text-gray-900 mb-3">
-                                                            Cover Message *
-                                                        </label>
-                                                        <textarea
-                                                            value={message}
-                                                            onChange={(e) => setMessage(e.target.value)}
-                                                            placeholder="Tell us why you're perfect for this role. Highlight your relevant experience and what makes you stand out..."
-                                                            rows="6"
-                                                            maxLength="500"
-                                                            className="w-full px-4 py-4 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-500 transition-all duration-200 resize-none text-lg"
-                                                            required
-                                                        />
-                                                        <div className="flex justify-between items-center mt-2">
-                                                            <p className="text-sm text-gray-500">
-                                                                {message.length}/500 characters
-                                                            </p>
-                                                            <div className={`w-24 h-2 rounded-full ${message.length > 400 ? 'bg-red-200' : 'bg-gray-200'}`}>
-                                                                <div
-                                                                    className={`h-full rounded-full transition-all duration-300 ${message.length > 400 ? 'bg-red-500' : 'bg-blue-500'
-                                                                        }`}
-                                                                    style={{ width: `${(message.length / 500) * 100}%` }}
-                                                                ></div>
-                                                            </div>
+                                                            {effectiveResumeMode === 'upload' && (
+                                                                <Input
+                                                                    id="resume"
+                                                                    type="file"
+                                                                    accept="application/pdf,.pdf"
+                                                                    aria-label="Choose resume PDF to upload"
+                                                                    aria-invalid={resumeError ? 'true' : undefined}
+                                                                    aria-describedby={resumeError ? 'resume-error' : 'resume-help'}
+                                                                    onChange={(e) => {
+                                                                        setResumeFile(e.target.files[0] || null);
+                                                                        setResumeError('');
+                                                                    }}
+                                                                    className="file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-surface-muted file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-foreground"
+                                                                />
+                                                            )}
                                                         </div>
-                                                    </div>
 
-                                                    <button
-                                                        onClick={handleApply}
-                                                        disabled={applying || !user}
-                                                        className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold py-5 px-6 rounded-xl hover:from-blue-700 hover:to-indigo-700 focus:ring-4 focus:ring-blue-200 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 text-lg shadow-lg hover:shadow-xl transform hover:-translate-y-1"
-                                                    >
-                                                        {applying ? (
-                                                            <>
-                                                                <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                                                                Submitting Application...
-                                                            </>
+                                                        {resumeError ? (
+                                                            <p id="resume-error" role="alert" className="text-xs font-medium text-danger">{resumeError}</p>
                                                         ) : (
-                                                            <>
-                                                                <Send className="w-6 h-6" />
-                                                                Submit Application
-                                                            </>
-                                                        )}
-                                                    </button>
-
-                                                    {!user && (
-                                                        <div className="text-center p-4 bg-yellow-50 rounded-xl border border-yellow-200">
-                                                            <p className="text-yellow-800 font-medium">
-                                                                🔐 You must be logged in to apply for jobs.
+                                                            <p id="resume-help" className="text-xs text-foreground-subtle">
+                                                                {requirements.resume === 'required'
+                                                                    ? 'This job requires a resume (PDF).'
+                                                                    : 'PDF, up to 5 MB. Optional.'}
                                                             </p>
-                                                        </div>
+                                                        )}
+                                                    </fieldset>
+                                                )}
+
+                                                {requirements.coverLetter !== 'not_needed' && (
+                                                    <Field
+                                                        id="coverLetter"
+                                                        label="Cover letter"
+                                                        required={requirements.coverLetter === 'required'}
+                                                        hint="A letter to the employer about your fit for this job."
+                                                    >
+                                                        <Textarea
+                                                            id="coverLetter"
+                                                            value={coverLetter}
+                                                            onChange={(e) => setCoverLetter(e.target.value)}
+                                                            placeholder="Introduce yourself and explain why you are a good fit…"
+                                                            rows={5}
+                                                            maxLength={3000}
+                                                        />
+                                                    </Field>
+                                                )}
+
+                                                {requirements.portfolio !== 'not_needed' && (
+                                                    <Field
+                                                        id="portfolioUrl"
+                                                        label="Portfolio URL"
+                                                        required={requirements.portfolio === 'required'}
+                                                        hint="A link to your portfolio or relevant work (http:// or https://)."
+                                                    >
+                                                        <Input
+                                                            id="portfolioUrl"
+                                                            type="url"
+                                                            value={portfolioUrl}
+                                                            onChange={(e) => setPortfolioUrl(e.target.value)}
+                                                            placeholder="https://example.com/portfolio"
+                                                        />
+                                                    </Field>
+                                                )}
+
+                                                <Button
+                                                    type="button"
+                                                    size="lg"
+                                                    className="w-full"
+                                                    onClick={handleApply}
+                                                    disabled={applying || !user || !isJobOpen || isDeadlinePassed}
+                                                    aria-busy={applying}
+                                                >
+                                                    {applying ? (
+                                                        <>
+                                                            <Clock className="h-4 w-4 animate-spin" aria-hidden="true" />
+                                                            Submitting…
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Send className="h-4 w-4" aria-hidden="true" />
+                                                            Submit application
+                                                        </>
                                                     )}
-                                                </div>
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
+                                                </Button>
+
+                                                {!user && (
+                                                    <p className="rounded-md border border-warning-subtle bg-warning-subtle px-3 py-2 text-center text-xs font-medium text-warning-subtle-foreground">
+                                                        You must be logged in to apply for jobs.
+                                                    </p>
+                                                )}
+                                            </div>
+                                        </>
+                                    )}
+                                </Card>
                             </div>
-                        </div>
+                        </aside>
                     </div>
                 </div>
-            </div>
+            </PageContainer>
         </div>
     );
 };

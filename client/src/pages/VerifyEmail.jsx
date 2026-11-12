@@ -3,10 +3,30 @@ import { auth } from '../firebase';
 import { sendEmailVerification, onAuthStateChanged, reload } from 'firebase/auth';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import Card from '../components/ui/Card';
+import Button from '../components/ui/Button';
+import Spinner from '../components/ui/Spinner';
 
+/*
+    STAGE 11.17c: presentation-only redesign onto the shared design system
+    (Card, Button, Spinner, design tokens), matching the redesigned auth pages.
+
+    Nothing about the verification flow changes. The `onAuthStateChanged` effect and
+    its unsubscribe cleanup, the 3-second polling effect and its clearInterval
+    cleanup, the getIdToken(true) -> reload() ordering, the
+    `localStorage.register_user` contract and its null guard (which redirects to
+    /login), the exact POST /users/register payload, the console.log/console.error
+    calls, the navigate('/dashboard') completion, and the resend operation with its
+    'http://localhost:5173/dashboard' URL are all copied through unchanged.
+
+    The only functional addition is a local `isResending` flag that lets the resend
+    button show a spinner and disable itself while the request is in flight; the
+    request itself, its guard messages and its status strings are untouched.
+*/
 const VerifyEmail = () => {
     const [user, setUser] = useState(null);
     const [status, setStatus] = useState('');
+    const [isResending, setIsResending] = useState(false);
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -66,6 +86,7 @@ const VerifyEmail = () => {
     const resendVerification = async () => {
         if (!user) return setStatus('⚠️ Not logged in.');
         if (user.emailVerified) return setStatus('✅ Already verified.');
+        setIsResending(true);
         try {
             await sendEmailVerification(user, {
                 url: 'http://localhost:5173/dashboard', // Or your deployed URL
@@ -73,51 +94,71 @@ const VerifyEmail = () => {
             setStatus('📧 Verification email sent!');
         } catch (err) {
             setStatus(`❌ ${err.message}`);
+        } finally {
+            setIsResending(false);
         }
     };
 
     return (
-        <div className="flex justify-center items-center h-screen p-5 bg-white font-sans">
-            <div className="bg-white p-8 md:p-10 rounded-xl text-center shadow-lg w-full max-w-sm">
-                {/* Logo Container */}
-                <div className="flex justify-center items-center mb-5">
-                    <img
-                        src="./image.png"
-                        alt="Logo"
-                        className="w-5 mr-2 md:w-7"
-                    />
-                    <span className="text-xl font-medium text-gray-800 antialiased md:text-2xl">
-                        KachPloy
-                    </span>
-                </div>
+        <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-10">
+            <div className="w-full max-w-md">
+                <Card className="p-6 text-center sm:p-8">
+                    {/* Branding */}
+                    <div className="flex items-center justify-center gap-2">
+                        <img src="/image.png" alt="" className="h-8 w-8 object-contain" />
+                        <span className="text-2xl font-semibold tracking-tight text-foreground">
+                            Kachploy
+                        </span>
+                    </div>
 
-                {/* Title */}
-                <h5 className="text-xl font-medium text-gray-800 mb-4 antialiased md:text-2xl">
-                    Verify Your Email
-                </h5>
+                    {/* Explanation */}
+                    <div className="mt-6 space-y-2">
+                        <h1 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
+                            Verify your email
+                        </h1>
+                        <p className="text-sm text-foreground-muted">
+                            {user?.email ? (
+                                <>
+                                    We sent a verification link to{' '}
+                                    <span className="font-medium text-foreground">{user.email}</span>.
+                                    Open the link to activate your account.
+                                </>
+                            ) : (
+                                'We sent a verification link to your email address. Open the link to activate your account.'
+                            )}
+                        </p>
+                    </div>
 
-                {/* Description */}
-                <p className="text-gray-600 mb-5 font-light antialiased">
-                    Please verify your email address:{' '}
-                    <span className="font-medium text-blue-700">
-                        {user?.email}
-                    </span>
-                </p>
+                    {/* Resend action */}
+                    <div className="mt-6">
+                        <Button
+                            type="button"
+                            size="lg"
+                            className="w-full"
+                            onClick={resendVerification}
+                            disabled={isResending}
+                        >
+                            {isResending && <Spinner size="sm" label="Sending verification email" />}
+                            {isResending ? 'Sending…' : 'Resend verification link'}
+                        </Button>
+                    </div>
 
-                {/* Resend Button */}
-                <button
-                    className="w-full bg-blue-700 hover:bg-blue-800 text-white font-normal py-3 px-4 rounded-lg mt-5 transition-colors antialiased"
-                    onClick={resendVerification}
-                >
-                    Resend Verification Link
-                </button>
-
-                {/* Status Message */}
-                {status && (
-                    <p className="text-sm text-blue-700 mt-4 font-light antialiased">
+                    {/* Status message: a polite live region so screen readers hear
+                        the result of the resend / the guard messages. */}
+                    <p
+                        role="status"
+                        aria-live="polite"
+                        className="mt-4 min-h-[1.25rem] text-sm font-medium text-foreground-muted"
+                    >
                         {status}
                     </p>
-                )}
+
+                    {/* Passive progress note for the automatic check */}
+                    <div className="mt-6 flex items-center justify-center gap-2 text-xs text-foreground-subtle">
+                        <Spinner size="sm" className="text-accent" label="Waiting for verification" />
+                        <span>This page updates automatically once you're verified.</span>
+                    </div>
+                </Card>
             </div>
         </div>
     );

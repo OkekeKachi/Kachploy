@@ -1,113 +1,93 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
+import { User, Pencil, MapPin } from 'lucide-react';
+import Card from './ui/Card';
+import Badge from './ui/Badge';
 
+/*
+  STAGE 11.3: responsive profile summary.
+
+  The prop contract is unchanged -- this still renders the `user` object that
+  EmployeeDashboard already loads -- and so is the one real profile action: a link
+  to /profile (the only target from the old sidebar that matched a route in
+  App.jsx).
+
+  Removed as confirmed demonstration content (not a layout simplification):
+    - the `https://via.placeholder.com/80` avatar placeholder;
+    - the `user.title || 'Full Stack Web Developer'` fallback -- `title` is not a
+      field CompleteProfile ever writes (it writes fullName, phone, address,
+      profilePic, skills, yearsOfExperience, availability / companyName, jobTypes,
+      location), so that subtitle was always fabricated;
+    - the hardcoded "100%" completion figure and full progress bar;
+    - the "Promote with ads" rows, whose only targets were `href="#!"`;
+    - the "Networks: 820" section, whose hardcoded count had no data source and
+      whose links pointed at /buy-Networks, /view-details and /free-networks --
+      none of which exist in App.jsx;
+    - the Preferences / Proposals / Project Catalog / Get Paid / Help Center rows,
+      which had no href and no handler at all.
+
+  It now shows only real profile data (fullName, profilePic, role, location and
+  the employee's skills) on a single shared Card, alongside the /profile action,
+  and reads as a compact full-width summary below the job list on mobile.
+*/
 const ProfileSidebar = ({ user }) => {
+    const skills = Array.isArray(user.skills) ? user.skills : [];
+
     return (
-        <div className="bg-gray-50 rounded-lg shadow-lg">
-            <div className="p-4">
-                {/* Profile Image and Name */}
-                <div className="text-center mb-4">
+        <Card className="p-4 sm:p-5">
+            <div className="flex items-center gap-4 sm:flex-col sm:text-center">
+                {user.profilePic ? (
                     <img
-                        src={user.profilePic || "https://via.placeholder.com/80"}
-                        alt="Profile"
-                        className="w-20 h-20 rounded-full mx-auto object-cover"
+                        src={user.profilePic}
+                        alt=""
+                        className="h-16 w-16 shrink-0 rounded-full object-cover"
                     />
-                    <h1 className="mt-2 mb-0 font-bold">
-                        {user.fullName}
-                    </h1>
-                    <p className="mt-1 mb-0 text-sm text-gray-600">
-                        {user.title || 'Full Stack Web Developer'}
-                    </p>
-                </div>
-
-                {/* Profile Completion */}
-                <div className="mb-4">
-                    <div className="flex justify-between items-center mb-1">
-                        <a href="/profile" className="text-blue-700 text-sm no-underline hover:underline">
-                            Complete your profile
-                        </a>
-                        <span className="text-blue-700 font-bold">100%</span>
-                    </div>
-                    <div className="h-1 bg-gray-300 rounded-sm overflow-hidden">
-                        <div className="w-full h-full bg-blue-700"></div>
-                    </div>
-                </div>
-
-                {/* Promote with ads section */}
-                <div className="mb-4 border-b border-gray-200 pb-4">
-                    <div className="flex justify-between items-center mb-2">
-                        <h6 className="m-0 text-base font-bold">Promote with ads</h6>
-                        <i className="material-icons text-xl text-gray-600">expand_more</i>
-                    </div>
-
-                    <div className="flex justify-between items-center mb-2">
-                        <span className="text-sm">Availability badge</span>
-                        <a href="#!" className="text-gray-600 hover:text-gray-800">
-                            <i className="material-icons text-lg">edit</i>
-                        </a>
-                    </div>
-                    <div className="text-xs text-gray-500 mb-3">Off</div>
-
-                    <div className="flex justify-between items-center mb-2">
-                        <span className="text-sm">Boost your profile</span>
-                        <a href="#!" className="text-gray-600 hover:text-gray-800">
-                            <i className="material-icons text-lg">edit</i>
-                        </a>
-                    </div>
-                    <div className="text-xs text-gray-500">Off</div>
-                </div>
-
-                {/* Networks section */}
-                <div className="mb-4 border-b border-gray-200 pb-4">
-                    <div className="flex justify-between items-center mb-2">
-                        <h6 className="m-0 text-base font-bold">Networks: 820</h6>
-                        <i className="material-icons text-xl text-gray-600">expand_more</i>
-                    </div>
-
-                    <a
-                        href="/buy-Networks"
-                        className="block w-full bg-white text-blue-700 border border-blue-700 rounded-full text-center py-2 px-4 mb-2 hover:bg-blue-50 transition-colors"
+                ) : (
+                    <div
+                        className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-surface-muted text-foreground-subtle"
+                        aria-hidden="true"
                     >
-                        Buy Networks
-                    </a>
-
-                    <div className="flex justify-between text-sm">
-                        <a href="/view-details" className="text-blue-700 hover:underline">View details</a>
-                        <span className="text-gray-500">|</span>
-                        <a href="/free-networks" className="text-blue-700 hover:underline">Free Networks</a>
+                        <User className="h-8 w-8" />
                     </div>
-                </div>
+                )}
 
-                {/* Preferences section */}
-                <div className="mb-2">
-                    <div className="flex justify-between items-center py-2 border-b border-gray-200">
-                        <span className="text-base font-medium">Preferences</span>
-                        <i className="material-icons text-xl text-gray-600">expand_more</i>
-                    </div>
-
-                    <div className="flex justify-between items-center py-2 border-b border-gray-200">
-                        <span className="text-base font-medium">Proposals</span>
-                        <i className="material-icons text-xl text-gray-600">expand_more</i>
-                    </div>
-
-                    <div className="flex justify-between items-center py-2 border-b border-gray-200">
-                        <span className="text-base font-medium">Project Catalog</span>
-                        <i className="material-icons text-xl text-gray-600">expand_more</i>
-                    </div>
-
-                    <div className="flex items-center justify-between py-2 mt-10 border-b border-gray-200">
-                        <span className="text-base font-medium">Get Paid</span>
-                        <i className="material-icons text-xl text-gray-600">account_balance_wallet</i>
-                    </div>
-
-                    <div className="flex items-center justify-between py-2 border-b border-gray-200">
-                        <span className="text-base font-medium">Help Center</span>
-                        <i className="material-icons text-xl text-gray-600">help</i>
-                    </div>
+                <div className="min-w-0">
+                    <h2 className="truncate text-base font-semibold text-foreground">
+                        {user.fullName || 'Your profile'}
+                    </h2>
+                    {user.role && (
+                        <p className="mt-0.5 text-sm capitalize text-foreground-muted">{user.role}</p>
+                    )}
+                    {user.location && (
+                        <p className="mt-1 flex items-center gap-1 text-sm text-foreground-muted sm:justify-center">
+                            <MapPin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                            <span className="truncate">{user.location}</span>
+                        </p>
+                    )}
                 </div>
             </div>
-            <div className="pb-12"></div>
-        </div>
+
+            {skills.length > 0 && (
+                <div className="mt-5 border-t border-border pt-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-foreground-subtle">
+                        Skills
+                    </h3>
+                    <div className="mt-2 flex flex-wrap gap-1.5 sm:justify-center">
+                        {skills.map((skill, i) => (
+                            <Badge key={i} variant="neutral">{skill}</Badge>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            <Link
+                to="/profile"
+                className="mt-5 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-border-strong bg-surface px-4 text-sm font-medium text-foreground transition-colors hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+            >
+                <Pencil className="h-4 w-4" aria-hidden="true" />
+                Edit profile
+            </Link>
+        </Card>
     );
 };
 

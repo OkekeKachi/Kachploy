@@ -1,9 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../firebase'; // Assuming you're using Firebase for authentication
-import api from '../api';
 import EmployerDashboard from './EmployerDashboard';  // Make sure to import these components
 import EmployeeDashboard from './EmployeeDashboard';
+import { PageLoader } from '../components/ui/Spinner';
+import EmptyState from '../components/ui/EmptyState';
+import Button from '../components/ui/Button';
+import { useUserQuery } from '../useUserQuery';
+import { ShieldAlert } from 'lucide-react';
 
 // const SkeletonJobLoader = () => {
 //     return (
@@ -98,53 +102,33 @@ import EmployeeDashboard from './EmployeeDashboard';
 // };
 
 const RoleBasedDashboard = () => {
-    const [role, setRole] = useState(null);
     const navigate = useNavigate();
 
+    // Phases 1-2 of the data-fetching audit: this page's own GET /users/getUser/:uid
+    // is now the shared identity query. It used to fetch the document here and then
+    // render a dashboard that fetched the SAME document again on every /dashboard
+    // visit; both reads are now one cache entry keyed by uid (see useUserQuery).
+    // The redirect for a missing session is kept as its own effect, exactly as the
+    // old fetchRole() did before it read the role.
     useEffect(() => {
-        const fetchRole = async () => {
-            // Get current user UID from Firebase authentication
-            const user = auth.currentUser;
+        if (!auth.currentUser) {
+            navigate('/login');
+        }
+    }, [navigate]);
 
-            if (!user) {
-                // If no user is authenticated, navigate to login
-                navigate('/login');
-                return;
-            }
+    const uid = auth.currentUser ? auth.currentUser.uid : '';
+    const userQuery = useUserQuery(uid);
 
-            try {
-                // Fetch user role from the backend
-                const response = await api.get(`/users/getUser/${user.uid}`);
-                const userRole = response.data.user.role;
-
-                setRole(userRole); // Set the role in the state
-            } catch (error) {
-                console.error('Error fetching role:', error);
-                // Handle error appropriately
-            }
-        };
-
-        fetchRole();
-    }, [navigate]);  // Only run this effect on mount (initial render)
+    // `role` is null until the document arrives -- which is the PageLoader gate
+    // below, unchanged. A loaded document with no `role` yields undefined, so it
+    // falls through to the Unauthorized screen exactly as the old
+    // `setRole(response.data.user.role)` did. A failed read leaves the document
+    // absent, so the loader keeps showing, same as the old catch-and-log path.
+    const role = userQuery.data ? userQuery.data.role : null;
 
     if (role === null) {
-        return (
-            <div className="min-h-screen bg-gradient-to-br from-blue-50 to-gray-100 flex items-center justify-center">
-                <div className="flex flex-col items-center space-y-4">
-                    {/* Main spinner */}
-                    <div className="relative">
-                        <div className="animate-spin rounded-full h-16 w-16 border-4 border-gray-200"></div>
-                        <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-600 border-t-transparent absolute top-0 left-0"></div>
-                    </div>
-
-                    {/* Loading text */}
-                    <div className="text-center">
-                        <p className="text-gray-700 font-medium">Loading...</p>
-                        <p className="text-gray-500 text-sm">Please wait while we get you going</p>
-                    </div>
-                </div>
-            </div>
-        )
+        // STAGE 11.1: shared PageLoader primitive replaces the local spinner block.
+        return <PageLoader label="Please wait while we get you going" />;
     }
 
     if (role === 'employer') {
@@ -153,7 +137,33 @@ const RoleBasedDashboard = () => {
         return <EmployeeDashboard />;
     }
 
-    return <div>Unauthorized</div>; // In case the role doesn't match anything
+    /*
+        STAGE 11.17d: presentation-only polish for the fallback that renders when the
+        fetched role is neither 'employer' nor 'employee'. It was a bare
+        <div>Unauthorized</div>; it is now the shared EmptyState primitive on the
+        design tokens, matching the rest of the app.
+
+        The action reuses the same destination and mechanism this component already
+        uses when there is no authenticated user (navigate('/login')): it adds a
+        user-triggered way back, and changes none of the existing redirects,
+        authorization logic or role routing above.
+    */
+    return (
+        <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-10">
+            <div className="w-full max-w-md">
+                <EmptyState
+                    icon={ShieldAlert}
+                    title="Unauthorized"
+                    description="Your account doesn't have access to a dashboard. Try signing in again, or contact support if the problem continues."
+                    action={
+                        <Button onClick={() => navigate('/login')}>
+                            Back to login
+                        </Button>
+                    }
+                />
+            </div>
+        </div>
+    ); // In case the role doesn't match anything
 };
 
 export default RoleBasedDashboard;

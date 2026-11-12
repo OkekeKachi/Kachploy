@@ -12,6 +12,12 @@ import api from '../api';
  *   GET    /interviews/job/:jobId     read     (requireJobOwner)
  *   GET    /interviews/application/:applicationId  (requireInterviewParty)
  *
+ * STAGE 10A added a fifth endpoint, PUT /interviews/:interviewId/response, which this
+ * panel neither calls nor could: `response` is the applicant's to write, behind
+ * requireInterviewRespondent, and an employer sending it is refused with a 400. What
+ * Stage 10A adds here is one line of display -- the applicant's answer -- read off the
+ * job-wide GET above, so it costs no additional request.
+ *
  * WHY THE PANEL IS GIVEN ITS INTERVIEWS RATHER THAN FETCHING THEM
  *   ViewJobApplications.jsx fetches the job-wide list once and groups it by
  *   applicationId, then hands each applicant card its own slice. Fetching
@@ -33,7 +39,8 @@ import api from '../api';
  *     appear to save and quietly discard the text.
  *   * No chat, notifications, video calling or calendar integration.
  *   * No applicant-facing mode. Reads are shared by both parties server-side, but
- *     writes are employer-only, and this component only ever writes.
+ *     every write in this panel is an employer write, and the one applicant write that
+ *     now exists (the accept/decline added in Stage 10A) is only ever displayed here.
  */
 
 /**
@@ -113,6 +120,34 @@ const STATUS_LABEL = {
     completed: 'Completed',
     cancelled: 'Cancelled',
     no_show: 'No show',
+};
+
+// STAGE 10A. The two answers the applicant may give, which this panel only ever
+// DISPLAYS. There is deliberately no control that writes them: `response` is not in
+// UPDATABLE_INTERVIEW_FIELDS, and the one route that writes it belongs to the
+// applicant, so an employer answering for them would be refused with a 400. Kept as
+// literals for the same reason STATUS_LABEL is: INTERVIEW_RESPONSES is a server
+// constant and not exposed over any endpoint.
+const RESPONSE_LABEL = {
+    accepted: 'Accepted',
+    declined: 'Declined',
+};
+
+/**
+ * STAGE 10A. The applicant's answer, as the employer sees it.
+ *
+ * An unanswered interview reads as "Awaiting response" rather than as a blank,
+ * because for this panel an invitation with no answer is the thing worth noticing:
+ * it is a scheduled meeting the applicant may not have seen.
+ *
+ * Anything unexpected falls through to the raw stored value, as TYPE_LABEL and
+ * STATUS_LABEL above do, so a document written by some future writer is shown rather
+ * than mislabelled as unanswered.
+ */
+const responseLabel = (interview) => {
+    if (!interview.response) return 'Awaiting response';
+
+    return RESPONSE_LABEL[interview.response] || interview.response;
 };
 
 const EMPTY_FORM = {
@@ -331,6 +366,15 @@ const InterviewPanel = ({ applicationId, jobId, interviews = [], isLoading = fal
                             </p>
                             <p style={{ margin: '0 0 4px' }}>
                                 <strong>Status:</strong> {STATUS_LABEL[interview.status] || interview.status}
+                            </p>
+                            {/*
+                                STAGE 10A: the applicant's answer, read from the same
+                                job-wide GET as everything else on this card, so it costs no
+                                additional request. Display only -- see RESPONSE_LABEL for why
+                                there is no control here that writes it.
+                            */}
+                            <p style={{ margin: '0 0 4px' }}>
+                                <strong>Applicant response:</strong> {responseLabel(interview)}
                             </p>
                             {interview.duration != null && (
                                 <p style={{ margin: '0 0 4px' }}>

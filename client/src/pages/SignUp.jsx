@@ -5,7 +5,25 @@ import {
     sendEmailVerification,
 } from 'firebase/auth';
 import { useNavigate } from 'react-router-dom';
+import Button from '../components/ui/Button';
+import { Field, Input, Select } from '../components/ui/Field';
 
+/*
+    STAGE 11.17b: presentation-only redesign onto the shared design system.
+
+    The full-page gradient background, white card, Kachploy logo and Log In / Sign Up
+    tab row this component used to render now live in AuthPage.jsx; only the form body
+    and a small switch line remain here (the switch line is what keeps the
+    `setisSignup` prop in use).
+
+    The handler is copied through unchanged, STAGE 5I-4 comment included: the account
+    is created, the `register_user` payload is staged in localStorage BEFORE
+    sendEmailVerification runs, the verification URL is the same literal
+    ('http://localhost:5173/verify-email'), and both catch branches -- staged vs.
+    never-created -- keep their exact messages and navigation. The empty-role guard
+    still alerts "❌ Please select your role." There is no loading guard; the submit
+    button behaves exactly as before.
+*/
 const SignUp = ({ setisSignup }) => {
     const [formData, setFormData] = useState({
         email: '',
@@ -85,136 +103,81 @@ const SignUp = ({ setisSignup }) => {
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center p-5 bg-gradient-to-l from-gray-100 to-white">
-            <div className="w-full max-w-md bg-white p-6 md:p-8 lg:p-10 rounded-xl shadow-lg text-center mt-0 md:mt-15 lg:max-w-lg lg:mx-auto">
-                {/* Logo Section */}
-                <div className="flex items-center justify-center mb-6">
-                    <img src="./image.png" alt="Logo" className="w-5 md:w-6 mr-2" />
-                    <span className="text-lg md:text-xl font-bold text-gray-800">KachPloy</span>
-                </div>
+        <div>
+            <form onSubmit={handleSignUp} className="space-y-4">
+                <Field id="fullName" label="Full Name">
+                    <Input
+                        id="fullName"
+                        name="fullName"
+                        type="text"
+                        value={formData.fullName}
+                        onChange={handleChange}
+                        required
+                    />
+                </Field>
 
-                {/* Header */}
-                <h5 className="text-xl md:text-2xl font-black mb-2">Create an account</h5>
-                <p className="text-sm text-gray-600 mb-5">Sign up to explore the find jobs or hire employees</p>
+                <Field id="phone" label="Phone Number">
+                    <Input
+                        id="phone"
+                        name="phone"
+                        type="tel"
+                        value={formData.phone}
+                        onChange={handleChange}
+                        required
+                    />
+                </Field>
 
-                {/* Tab Buttons */}
-                <div className="flex justify-around mx-5 mb-6 p-2 bg-gray-100 rounded-2xl">
-                    <button
-                        className="text-xs md:text-sm font-bold px-5 md:px-12 py-2 text-gray-600 hover:bg-gray-50 rounded-xl transition-colors"
-                        onClick={() => setisSignup(false)}
+                <Field id="email" label="Email">
+                    <Input
+                        id="email"
+                        name="email"
+                        type="email"
+                        value={formData.email}
+                        onChange={handleChange}
+                        required
+                    />
+                </Field>
+
+                <Field id="password" label="Password">
+                    <Input
+                        id="password"
+                        name="password"
+                        type="password"
+                        value={formData.password}
+                        onChange={handleChange}
+                        required
+                    />
+                </Field>
+
+                <Field id="role" label="Role">
+                    <Select
+                        id="role"
+                        name="role"
+                        value={formData.role}
+                        onChange={handleChange}
+                        required
                     >
-                        Log In
-                    </button>
-                    <button
-                        className="text-xs md:text-sm font-bold px-5 md:px-12 py-2 bg-white rounded-xl shadow-sm"
-                        onClick={() => setisSignup(true)}
-                    >
-                        Sign Up
-                    </button>
-                </div>
+                        <option value="" disabled>Select Role</option>
+                        <option value="employee">Employee</option>
+                        <option value="employer">Employer</option>
+                    </Select>
+                </Field>
 
-                {/* Sign Up Form */}
-                <form onSubmit={handleSignUp} className="space-y-4">
-                    <div className="relative">
-                        <input
-                            name="fullName"
-                            value={formData.fullName}
-                            onChange={handleChange}
-                            type="text"
-                            required
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent peer"
-                            placeholder=" "
-                        />
-                        <label
-                            htmlFor="fullName"
-                            className="absolute left-4 top-3 text-gray-500 transition-all duration-200 peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-focus:-top-2 peer-focus:left-2 peer-focus:text-xs peer-focus:text-blue-500 peer-focus:bg-white peer-focus:px-1 peer-valid:-top-2 peer-valid:left-2 peer-valid:text-xs peer-valid:text-blue-500 peer-valid:bg-white peer-valid:px-1"
-                        >
-                            Full Name
-                        </label>
-                    </div>
+                <Button type="submit" size="lg" className="w-full">
+                    Sign Up
+                </Button>
+            </form>
 
-                    <div className="relative">
-                        <input
-                            name="phone"
-                            value={formData.phone}
-                            onChange={handleChange}
-                            type="tel"
-                            required
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent peer"
-                            placeholder=" "
-                        />
-                        <label
-                            htmlFor="phone"
-                            className="absolute left-4 top-3 text-gray-500 transition-all duration-200 peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-focus:-top-2 peer-focus:left-2 peer-focus:text-xs peer-focus:text-blue-500 peer-focus:bg-white peer-focus:px-1 peer-valid:-top-2 peer-valid:left-2 peer-valid:text-xs peer-valid:text-blue-500 peer-valid:bg-white peer-valid:px-1"
-                        >
-                            Phone Number
-                        </label>
-                    </div>
-
-                    <div className="relative">
-                        <input
-                            name="email"
-                            value={formData.email}
-                            onChange={handleChange}
-                            type="email"
-                            required
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent peer"
-                            placeholder=" "
-                        />
-                        <label
-                            htmlFor="email"
-                            className="absolute left-4 top-3 text-gray-500 transition-all duration-200 peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-focus:-top-2 peer-focus:left-2 peer-focus:text-xs peer-focus:text-blue-500 peer-focus:bg-white peer-focus:px-1 peer-valid:-top-2 peer-valid:left-2 peer-valid:text-xs peer-valid:text-blue-500 peer-valid:bg-white peer-valid:px-1"
-                        >
-                            Email
-                        </label>
-                    </div>
-
-                    <div className="relative">
-                        <input
-                            name="password"
-                            value={formData.password}
-                            onChange={handleChange}
-                            type="password"
-                            required
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent peer"
-                            placeholder=" "
-                        />
-                        <label
-                            htmlFor="password"
-                            className="absolute left-4 top-3 text-gray-500 transition-all duration-200 peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-focus:-top-2 peer-focus:left-2 peer-focus:text-xs peer-focus:text-blue-500 peer-focus:bg-white peer-focus:px-1 peer-valid:-top-2 peer-valid:left-2 peer-valid:text-xs peer-valid:text-blue-500 peer-valid:bg-white peer-valid:px-1"
-                        >
-                            Password
-                        </label>
-                    </div>
-
-                    <div className="relative">
-                        <select
-                            name="role"
-                            value={formData.role}
-                            onChange={handleChange}
-                            required
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none bg-white cursor-pointer"
-                        >
-                            <option value="" disabled className="text-gray-400">Select Role</option>
-                            <option value="employee" className="text-gray-900">Employee</option>
-                            <option value="employer" className="text-gray-900">Employer</option>
-                        </select>
-                        {/* Custom dropdown arrow */}
-                        <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
-                            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path>
-                            </svg>
-                        </div>
-                    </div>
-
-                    <button
-                        type="submit"
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition-colors duration-200 mt-6"
-                    >
-                        Sign Up
-                    </button>
-                </form>
-            </div>
+            <p className="mt-6 text-center text-sm text-foreground-muted">
+                Already have an account?{' '}
+                <button
+                    type="button"
+                    onClick={() => setisSignup(false)}
+                    className="font-medium text-accent transition-colors hover:text-accent-hover hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
+                >
+                    Log In
+                </button>
+            </p>
         </div>
     );
 };
