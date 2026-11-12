@@ -1,0 +1,28 @@
+# Environment files
+*.env
+!.env.example
+
+# Firebase service-account credentials (active and duplicate locations)
+/server/config/pet-idea-firebase-adminsdk-gc05a-d562d86349.json
+/server/pet-idea-firebase-adminsdk-gc05a-d562d86349.json
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build / dist artifacts
+/client/dist/
+/client/build/
+
+# Generated / runtime artifacts
+/.cache/
+/.husky/
+
+# IDE specific
+.vscode/
+.idea/

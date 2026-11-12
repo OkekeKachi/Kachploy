@@ -8,13 +8,14 @@ yarn-error.log
 .env
 *.env
 
-# Firebase service account
+# Firebase service-account credentials
 serviceAccountKey.json
+/config/pet-idea-firebase-adminsdk-gc05a-d562d86349.json
+/pet-idea-firebase-adminsdk-gc05a-d562d86349.json
 
 # IDE files
 .vscode/
 .idea/
-/config/*json
 
 # Build directories
 /dist/

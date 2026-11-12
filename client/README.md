@@ -1,12 +1,29 @@
-# React + Vite
+# KachPloy client
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite single-page application. See the root `README.md` for deployment and staging instructions.
 
-Currently, two official plugins are available:
+## Local development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+```bash
+npm ci
+npm run dev
+```
 
-## Expanding the ESLint configuration
+The API base URL comes from `VITE_API_URL`. When it is unset, local development falls back to `http://localhost:3000`.
 
-If you are developing a production application, we recommend using TypeScript and enable type-aware lint rules. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Checks
+
+```bash
+npm test
+npm run lint
+```
+
+## Production build
+
+```bash
+VITE_API_URL=https://<staging-backend-host> npm run build
+```
+
+`VITE_API_URL` is required for production builds. The build fails when it is missing. The value is inlined by Vite, so changing the backend origin requires a rebuild.
+
+Copy `client/.env.example` when creating a local `.env`. It contains placeholders only; never commit real credentials.
