@@ -140,12 +140,13 @@ const LandingPage = () => {
               Find the right people to bring your ideas to life.
             </h2>
           </div>
-          <div className="prose max-w-none">
+          <div className="prose max-w-none text-center">
             <p className="text-foreground-muted mb-6 max-w-xl mx-auto">
               Post opportunities that attract the right talent. Review applications,
               agree on clear contracts, and track work progress from submission to
               approval. Everything in one place — no scattered emails, no guesswork.
             </p>
+
             <Button
               variant="primary"
               size="md"
