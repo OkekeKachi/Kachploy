@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://kachploy.pages.dev/sitemap.xml

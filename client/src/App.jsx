@@ -26,6 +26,8 @@ import ScrollToTop from './components/ScrollToTop';
 import LandingPage from './pages/LandingPage';
 import AboutPage from './pages/AboutPage';
 import HowItWorksPage from './pages/HowItWorksPage';
+import NotFound from './pages/NotFound';
+import RouteMetadata from './components/RouteMetadata';
 
 
 function App() {
@@ -40,6 +42,7 @@ function App() {
       <SessionCacheBoundary>
         <Router>
           <ScrollToTop />
+          <RouteMetadata />
           <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/about" element={<AboutPage />} />
@@ -289,6 +292,8 @@ function App() {
               </ProtectedRoute>
             }
           />
+
+          <Route path="*" element={<NotFound />} />
 
         </Routes>
       </Router>
