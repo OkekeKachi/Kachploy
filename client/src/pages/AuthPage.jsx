@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import SignUp from './SignUp';
 import Login from './Login';
 import Card from '../components/ui/Card';
+import BrandWordmark from '../components/BrandWordmark';
 
 /*
     STAGE 11.17b: the shared authentication shell.
@@ -34,11 +35,8 @@ const AuthPage = () => {
                 <Card className="p-6 sm:p-8">
                     {/* Branding */}
                     <div className="mb-6 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                            <img src="/image.png" alt="" className="h-8 w-8 object-contain" />
-                            <span className="text-2xl font-semibold tracking-tight text-foreground">
-                                Kachploy
-                            </span>
+                        <div className="flex items-center justify-center">
+                            <BrandWordmark size="lg" />
                         </div>
                         <p className="mt-2 text-sm text-foreground-muted">
                             Create an account or log in to hire and get hired

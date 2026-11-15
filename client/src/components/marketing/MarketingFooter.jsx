@@ -1,12 +1,15 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
+import BrandWordmark from '../BrandWordmark';
 
 const MarketingFooter = () => (
   <footer className="bg-black py-16">
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
       <div className="mb-12 grid gap-8 md:grid-cols-2">
         <div>
-          <h3 className="mb-4 text-xl font-semibold text-white">Kachploy</h3>
+          <h3 className="mb-4">
+            <BrandWordmark size="md" tone="dark" />
+          </h3>
           <p className="max-w-lg text-white/60">
             A freelance marketplace connecting employers with skilled professionals.
             Manage projects, milestone contracts, and payments all in one place.

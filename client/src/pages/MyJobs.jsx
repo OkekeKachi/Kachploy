@@ -409,16 +409,18 @@ const MyJobs = () => {
                                                     <ActionLink
                                                         to={`/employer/jobs/${job.id}/applications/${encodeURIComponent(job.title)}`}
                                                         variant="primary"
+                                                        className="min-w-fit whitespace-nowrap"
                                                     >
-                                                        <Eye className="h-4 w-4" aria-hidden="true" />
+                                                        <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
                                                         View apps
                                                     </ActionLink>
                                                 ) : isJobFilled(job.status) ? (
                                                     <ActionLink
                                                         to={`/employer/jobs/${job.id}/applications/${encodeURIComponent(job.title)}`}
                                                         variant="accent"
+                                                        className="min-w-fit whitespace-nowrap"
                                                     >
-                                                        <Eye className="h-4 w-4" aria-hidden="true" />
+                                                        <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
                                                         View applicants
                                                     </ActionLink>
                                                 ) : (

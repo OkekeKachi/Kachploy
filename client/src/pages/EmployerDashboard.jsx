@@ -438,9 +438,9 @@ const EmployerDashboard = () => {
                                                 <Button
                                                     size="sm"
                                                     onClick={() => handleViewApplications(job.id, job.title)}
-                                                    className="flex-1 lg:w-full"
+                                                    className="min-w-fit flex-1 whitespace-nowrap lg:w-full"
                                                 >
-                                                    <Eye className="h-4 w-4" aria-hidden="true" />
+                                                    <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
                                                     View applications
                                                 </Button>
                                             ) : isJobFilled(job.status) ? (
@@ -448,9 +448,9 @@ const EmployerDashboard = () => {
                                                     variant="secondary"
                                                     size="sm"
                                                     onClick={() => handleViewApplications(job.id, job.title)}
-                                                    className="flex-1 lg:w-full"
+                                                    className="min-w-fit flex-1 whitespace-nowrap lg:w-full"
                                                 >
-                                                    <Eye className="h-4 w-4" aria-hidden="true" />
+                                                    <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
                                                     View applicants
                                                 </Button>
                                             ) : (
@@ -472,9 +472,9 @@ const EmployerDashboard = () => {
                                                     variant="secondary"
                                                     size="sm"
                                                     onClick={() => handleManageEmployees(job.id, job.title)}
-                                                    className="flex-1 lg:w-full"
+                                                    className="min-w-fit flex-1 whitespace-nowrap lg:w-full"
                                                 >
-                                                    <Users className="h-4 w-4" aria-hidden="true" />
+                                                    <Users className="h-4 w-4 shrink-0" aria-hidden="true" />
                                                     Manage employees ({job.employeeCount})
                                                 </Button>
                                             )}

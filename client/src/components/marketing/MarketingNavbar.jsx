@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import Button from '../ui/Button';
+import BrandWordmark from '../BrandWordmark';
 import useMarketingCta from '../../useMarketingCta';
 
 const desktopItems = [
@@ -89,24 +90,14 @@ const MarketingNavbar = () => {
         <div className="flex h-16 items-center justify-between gap-4">
           <Link
             to="/dashboard"
-            className="flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+            className="flex items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
             aria-label="Kachploy home"
           >
-            <img
-              src="/image.png"
-              alt=""
-              className="h-6 w-6 object-contain"
-              onError={(event) => {
-                event.currentTarget.style.display = 'none';
-              }}
+            <BrandWordmark
+              size="md"
+              tone={isNavScrolled ? 'light' : 'dark'}
+              className="transition-colors"
             />
-            <span
-              className={`text-xl font-semibold tracking-tight transition-colors ${
-                isNavScrolled ? 'text-foreground' : 'text-white'
-              }`}
-            >
-              Kachploy
-            </span>
           </Link>
 
           <div className="hidden items-center gap-2 lg:flex">

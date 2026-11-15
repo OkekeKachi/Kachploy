@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { auth } from '../firebase';
 import { Search, User, Menu, X, Home, LogOut, ChevronDown, ClipboardList, FileText, CreditCard } from 'lucide-react';
 import MessagesNavLink from './MessagesNavLink';
+import BrandWordmark from './BrandWordmark';
 import Button from './ui/Button';
 import { isNavPathActive } from './navRouteActive';
 import { useUserQuery } from '../useUserQuery';
@@ -244,21 +245,10 @@ const AppNavbar = ({ user }) => {
                     {/* Logo Section */}
                     <Link
                         to="/"
-                        className="flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+                        aria-label="Kachploy home"
+                        className="flex items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
                     >
-                        <img
-                            src="/image.png"
-                            alt=""
-                            className="h-6 w-6 object-contain"
-                            onError={(e) => {
-                                // Fallback if the image fails to load: hide it and let
-                                // the wordmark below stand in.
-                                e.currentTarget.style.display = 'none';
-                            }}
-                        />
-                        <span className="text-xl font-semibold tracking-tight text-foreground">
-                            Kachploy
-                        </span>
+                        <BrandWordmark size="md" />
                     </Link>
 
                     {/* Desktop Navigation */}

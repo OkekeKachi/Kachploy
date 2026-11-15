@@ -6,6 +6,7 @@ import api from '../api';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Spinner from '../components/ui/Spinner';
+import BrandWordmark from '../components/BrandWordmark';
 
 /*
     STAGE 11.17c: presentation-only redesign onto the shared design system
@@ -104,11 +105,8 @@ const VerifyEmail = () => {
             <div className="w-full max-w-md">
                 <Card className="p-6 text-center sm:p-8">
                     {/* Branding */}
-                    <div className="flex items-center justify-center gap-2">
-                        <img src="/image.png" alt="" className="h-8 w-8 object-contain" />
-                        <span className="text-2xl font-semibold tracking-tight text-foreground">
-                            Kachploy
-                        </span>
+                    <div className="flex items-center justify-center">
+                        <BrandWordmark size="lg" />
                     </div>
 
                     {/* Explanation */}
