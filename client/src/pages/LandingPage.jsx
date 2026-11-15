@@ -67,11 +67,10 @@ const LandingPage = () => {
           <div className="grid md:grid-cols-2 gap-12 items-center">
             <div>
               <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight text-white leading-tight">
-                Great work starts with the right connection.
+                Find the right job. Hire the right talent.
               </h1>
               <p className="mt-6 text-lg md:text-xl text-white/75 max-w-xl">
-                Find skilled professionals, discover meaningful opportunities, and manage
-                projects with confidence — all in one place.
+                Whether you're looking for your next opportunity or searching for skilled professionals to bring your ideas to life, Kachploy connects you with the right people to get work done.
               </p>
               <div className="mt-8 flex flex-wrap gap-4">
                 <Button
